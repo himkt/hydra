@@ -6,6 +6,7 @@
   <a href="https://github.com/hydra-ecosystem/hydra/actions/workflows/core_tests.yml"><img src="https://github.com/hydra-ecosystem/hydra/actions/workflows/core_tests.yml/badge.svg?branch=main" alt="GitHub Actions build" /></a>
   <a href="https://www.pepy.tech/projects/hydra-core?versions=0.11.*&versions=1.0.*&versions=1.1.*&versions=1.2.*&versions=1.3.*&versions=1.4.*"><img src="https://pepy.tech/badge/hydra-core/month" alt="Downloads" /></a>
   <a href="https://hydra.cc"><img src="https://hydra.cc/img/hydra-config-badge.svg" alt="Config: Hydra" /></a>
+  <a href="https://cli.dev"><img src="https://cli.dev/img/badges/cli-dev-ecosystem.svg" alt="ecosystem: cli.dev" /></a>
 </p>
 
 <p align="center">
