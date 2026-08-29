@@ -1,7 +1,17 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+import logging
+import os
+import pathlib
+import re
+import subprocess
+import sys
+import tempfile
+import textwrap
 from contextlib import nullcontext
+from typing import cast
 
 import pytest
+from omegaconf import OmegaConf
 
 from tools.release import release
 from tools.release.release import (
@@ -158,6 +168,7 @@ def test_dispatch_publish_workflow_uses_json_boolean_input(monkeypatch) -> None:
         "hydra-full-release",
         parse_version("1.4.0.dev3"),
         "main",
+        "a" * 40,
         "hydra_optuna_sweeper",
     )
 
@@ -176,10 +187,147 @@ def test_dispatch_publish_workflow_uses_json_boolean_input(monkeypatch) -> None:
             ],
             "/repo",
             '{"package_set": "hydra-full-release", '
-            '"expected_version": "1.4.0.dev3", "publish": "true", '
+            '"expected_version": "1.4.0.dev3", '
+            f'"commit": "{"a" * 40}", '
+            '"publish": "true", '
             '"only": "hydra_optuna_sweeper"}',
         )
     ]
+
+
+def _run_publish_plan(commit: str, head_sha: str = "b" * 40, ref: str = "main"):
+    """Drive publish.yml's release-plan script directly.
+
+    The script decides which commit the whole publish run builds, so it is
+    exercised here rather than only in CI.
+    """
+    workflow = pathlib.Path(".github/workflows/publish.yml").read_text()
+    match = re.search(r"python <<'PY'\n(.*?)\n\s*PY\n", workflow, re.S)
+    assert match is not None, "release-plan script not found in publish.yml"
+    script = textwrap.dedent(match.group(1))
+
+    with tempfile.TemporaryDirectory() as tmp:
+        output = pathlib.Path(tmp, "output")
+        output.touch()
+        pathlib.Path(tmp, "summary").touch()
+        env = {
+            **os.environ,
+            "REF_NAME": ref,
+            "HEAD_SHA": head_sha,
+            "INPUT_COMMIT": commit,
+            "INPUT_PACKAGE_SET": "hydra-full-release",
+            "INPUT_ONLY": "",
+            "INPUT_EXPECTED_VERSION": "1.4.0.dev9",
+            "INPUT_PUBLISH": "true",
+            "GITHUB_OUTPUT": str(output),
+            "GITHUB_STEP_SUMMARY": str(pathlib.Path(tmp, "summary")),
+        }
+        proc = subprocess.run(
+            [sys.executable, "-c", script], env=env, capture_output=True, text=True
+        )
+        outputs = dict(
+            line.split("=", 1)
+            for line in output.read_text().splitlines()
+            if "=" in line
+        )
+    return proc.returncode, outputs.get("checkout_ref")
+
+
+def test_publish_plan_pins_dispatched_branch_tip_without_a_commit_input() -> None:
+    returncode, checkout_ref = _run_publish_plan("")
+
+    assert returncode == 0
+    assert checkout_ref == "b" * 40
+
+
+def test_publish_plan_pins_the_requested_commit() -> None:
+    returncode, checkout_ref = _run_publish_plan("f" * 40)
+
+    assert returncode == 0
+    assert checkout_ref == "f" * 40
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        "f67e393af44e",
+        "F" * 40,
+        "1.3_branch",
+        "main; rm -rf /",
+    ],
+)
+def test_publish_plan_rejects_a_commit_that_is_not_a_full_sha(commit: str) -> None:
+    returncode, checkout_ref = _run_publish_plan(commit)
+
+    assert returncode == 1
+    assert checkout_ref is None
+
+
+def test_dev_release_dispatches_the_commit_it_reports_after_bumping(
+    monkeypatch, caplog
+) -> None:
+    """The recovery path creates a commit between reporting and dispatching.
+
+    Whatever commit the operator is told about must be the commit that is
+    published, so the two must be resolved from the same point in the sequence.
+    """
+    commits = iter(["a" * 40, "b" * 40])
+    current = {"sha": next(commits)}
+    dispatched = {}
+
+    monkeypatch.setattr(release, "detect_vcs", lambda hydra_root: "sl")
+    monkeypatch.setattr(release, "ensure_publish_tools", lambda *a: None)
+    monkeypatch.setattr(release, "ensure_clean_worktree", lambda *a: None)
+    monkeypatch.setattr(release, "ensure_publish_base_matches_ref", lambda *a: None)
+    monkeypatch.setattr(release, "collect_dev_release_package_info", lambda *a: [])
+    monkeypatch.setattr(release, "format_dev_release_package_table", lambda infos: "")
+    monkeypatch.setattr(release, "fail_if_any_target_version_published", lambda i: None)
+    monkeypatch.setattr(release, "copy_release_workspace", lambda root, tmp: tmp)
+    monkeypatch.setattr(release, "validate_dev_release_artifacts", lambda *a: None)
+    monkeypatch.setattr(release, "set_package_versions", lambda *a: None)
+    monkeypatch.setattr(
+        release, "get_worktree_status", lambda *a: "M hydra/__init__.py"
+    )
+    monkeypatch.setattr(release, "push_current_ref", lambda *a: None)
+    monkeypatch.setattr(
+        release, "get_current_commit", lambda hydra_root, vcs: current["sha"]
+    )
+
+    def fake_commit_dev_release(hydra_root, vcs, target_version):
+        current["sha"] = next(commits)
+
+    def fake_dispatch(hydra_root, vcs, package_set, target_version, ref, commit, only):
+        dispatched["commit"] = commit
+
+    monkeypatch.setattr(release, "commit_dev_release", fake_commit_dev_release)
+    monkeypatch.setattr(release, "dispatch_publish_workflow", fake_dispatch)
+
+    cfg = cast(
+        release.Config,
+        OmegaConf.create(
+            {
+                "version": "1.4.0.dev3",
+                "dry_run": False,
+                "publish": True,
+                "workflow_ref": "main",
+                "only": "",
+                "packages": {},
+                "repository": {"name": "pypi"},
+            }
+        ),
+    )
+
+    with caplog.at_level(logging.INFO, logger=release.log.name):
+        release.run_dev_release(cfg, "/repo", pathlib.Path("/repo/build"), "hydra-core")
+
+    reported = [
+        line.split("commit=")[1].split()[0]
+        for line in caplog.messages
+        if "commit=" in line
+    ]
+
+    assert dispatched["commit"] == "b" * 40
+    assert reported == ["b" * 40]
 
 
 def test_check_build_artifacts_upgrades_smoke_environment_pip(

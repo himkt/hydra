@@ -3,7 +3,7 @@
 # Security model: https://docs.pypi.org/trusted-publishers/security-model/
 name: Publish to PyPI
 run-name: >-
-  Publish ${{ inputs.package_set }} ${{ inputs.expected_version || '<version not checked>' }}
+  Publish ${{ inputs.package_set }} ${{ inputs.expected_version || '<version not checked>' }}${{ inputs.commit && format(' @ {0}', inputs.commit) || '' }}
   (${{ inputs.publish && 'upload' || 'dry run' }})
 
 on:
@@ -27,6 +27,11 @@ on:
         default: ""
       expected_version:
         description: "Optional version to validate before publishing"
+        required: false
+        type: string
+        default: ""
+      commit:
+        description: "Full commit SHA to publish. Leave empty to pin the dispatched branch tip."
         required: false
         type: string
         default: ""
@@ -60,6 +65,8 @@ jobs:
       id: plan
       env:
         REF_NAME: ${{ github.ref_name }}
+        HEAD_SHA: ${{ github.sha }}
+        INPUT_COMMIT: ${{ inputs.commit }}
         INPUT_PACKAGE_SET: ${{ inputs.package_set }}
         INPUT_ONLY: ${{ inputs.only }}
         INPUT_EXPECTED_VERSION: ${{ inputs.expected_version }}
@@ -71,6 +78,8 @@ jobs:
         import sys
 
         ref_name = os.environ["REF_NAME"]
+        head_sha = os.environ["HEAD_SHA"]
+        input_commit = os.environ["INPUT_COMMIT"].strip()
         input_package_set = os.environ["INPUT_PACKAGE_SET"].strip()
         input_only = os.environ["INPUT_ONLY"].strip()
         input_expected_version = os.environ["INPUT_EXPECTED_VERSION"].strip()
@@ -81,7 +90,16 @@ jobs:
             sys.exit(1)
 
         package_set = input_package_set or "hydra-full-release"
-        checkout_ref = ref_name
+
+        # Publishing is pinned to an immutable commit so that pushes landing
+        # after dispatch, including while the run waits for environment
+        # approval, cannot change what gets built and uploaded.
+        if input_commit and not re.fullmatch(r"[0-9a-f]{40}", input_commit):
+            fail(
+                "commit must be a full 40-character lowercase SHA; "
+                f"got {input_commit!r}"
+            )
+        checkout_ref = input_commit or head_sha
         expected_version = input_expected_version
         publish_enabled = "true" if input_publish.lower() == "true" else "false"
 
@@ -116,7 +134,12 @@ jobs:
             print(f"- Package set: `{package_set}`", file=summary)
             if input_only:
                 print(f"- Package filter: `{input_only}`", file=summary)
-            print(f"- Checkout ref: `{checkout_ref}`", file=summary)
+            print(f"- Dispatched ref: `{ref_name}`", file=summary)
+            pin_source = "commit input" if input_commit else "branch tip at dispatch"
+            print(
+                f"- Checkout commit: `{checkout_ref}` ({pin_source})",
+                file=summary,
+            )
             version = expected_version or "<not provided>"
             print(f"- Expected version: `{version}`", file=summary)
             print(f"- Publish enabled: `{publish_enabled}`", file=summary)
@@ -189,6 +212,7 @@ jobs:
     - name: Write release summary
       env:
         PUBLISH_ENABLED: ${{ needs.release-plan.outputs.publish_enabled }}
+        CHECKOUT_COMMIT: ${{ needs.release-plan.outputs.checkout_ref }}
         PACKAGE_SET: ${{ needs.release-plan.outputs.package_set }}
         ONLY: ${{ needs.release-plan.outputs.only }}
         EXPECTED_VERSION: ${{ needs.release-plan.outputs.expected_version }}
@@ -216,7 +240,7 @@ jobs:
           fi
           echo "- Trigger: ${GITHUB_EVENT_NAME}"
           echo "- Ref: \`${GITHUB_REF_NAME}\`"
-          echo "- Commit: \`${GITHUB_SHA}\`"
+          echo "- Commit: \`${CHECKOUT_COMMIT}\`"
           echo "- Outcome: ${outcome}"
           echo
           echo "### Artifacts"

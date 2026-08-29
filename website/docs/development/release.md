@@ -108,9 +108,10 @@ for release decisions.
 
 Use the `Prepare Release` workflow to run the current prepare checks. It accepts
 the release line, target version, package set, and optional recovery-only branch
-override. It derives the release kind and target branch, checks selected
-packages against PyPI for the requested target version, verifies build
-artifacts for that version, and runs the release validation matrix.
+override. It derives the release kind and target branch, resolves the exact
+commit that every job checks out, compares selected packages against PyPI for
+the requested target version, verifies build artifacts for that version, and
+runs the release validation matrix.
 
 Prepare release must not upload artifacts to PyPI. The current workflow is a
 validation step. It applies target versions only inside the disposable workflow
@@ -166,6 +167,13 @@ python tools/release/release.py \
 
 Use the PyPI workflow for real dev, release-candidate, and stable releases.
 
+Every run pins one commit for every job. Leave the workflow's `commit` input
+empty to pin the dispatched branch tip, or set it to a full 40-character commit
+SHA to publish that exact commit, for example when the branch has already moved
+past the release you are publishing. The release tool always sends the exact
+commit it publishes, which on the recovery path is the version bump it just
+created, so this input matters only for a manual dispatch.
+
 For dev releases, use the release tool's dev-release action. By default this is
 a dry run: it shows the selected packages and versions, checks PyPI for the
 target version, builds artifacts in a temporary release workspace, runs
@@ -191,9 +199,10 @@ python tools/release/release.py \
 
 To publish the dev release, rerun with `publish=true`. This requires a clean
 working tree whose current commit matches `remote/<workflow_ref>` and dispatches
-`Publish to PyPI` with the selected package set and expected version. In the
-normal release flow, the selected packages are already at this version because
-they were bumped immediately after the previous release:
+`Publish to PyPI` with the selected package set, expected version, and the exact
+commit being published. In the normal release flow, the selected packages are
+already at this version because they were bumped immediately after the previous
+release:
 
 ```shell
 python tools/release/release.py \
@@ -207,9 +216,11 @@ The command can set, commit, and push the target version when the selected
 packages do not already match it. Treat that as a recovery path, not the normal
 release cadence.
 
-After the publish workflow succeeds, immediately advance the selected packages
-to the next development version, commit, and push the change before resuming
-development:
+Wait for the publish workflow run to finish before advancing anything. The run
+pauses for `pypi-publish` environment approval, so a bump pushed while it waits
+lands on the branch before the build job starts. Once the run succeeds,
+immediately advance the selected packages to the next development version,
+commit, and push the change before resuming development:
 
 ```shell
 python tools/release/release.py \

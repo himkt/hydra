@@ -532,13 +532,16 @@ def get_github_repo_slug(remote_url: str) -> str:
     raise ValueError(f"Could not determine GitHub repo from remote URL: {remote_url}")
 
 
+def get_current_commit(hydra_root: str, vcs: str) -> str:
+    if vcs == "sl":
+        return _single_line(["sl", "log", "-r", ".", "-T", "{node}"], hydra_root)
+    return _single_line(["git", "rev-parse", "HEAD"], hydra_root)
+
+
 def ensure_publish_base_matches_ref(
     hydra_root: str, vcs: str, workflow_ref: str
 ) -> None:
-    if vcs == "sl":
-        current = _single_line(["sl", "log", "-r", ".", "-T", "{node}"], hydra_root)
-    else:
-        current = _single_line(["git", "rev-parse", "HEAD"], hydra_root)
+    current = get_current_commit(hydra_root, vcs)
     expected = get_remote_branch_node(hydra_root, vcs, workflow_ref)
 
     if current != expected:
@@ -580,12 +583,14 @@ def dispatch_publish_workflow(
     package_set: str,
     target_version: Version,
     workflow_ref: str,
+    commit: str,
     only: str = "",
 ) -> None:
     repo_slug = get_github_repo_slug(get_remote_url(hydra_root, vcs))
     inputs = {
         "package_set": package_set,
         "expected_version": str(target_version),
+        "commit": commit,
         "publish": "true",
         "only": only,
     }
@@ -625,9 +630,8 @@ def run_dev_release(
     target_version = parse_version(cfg.version)
     validate_dev_version(target_version)
 
-    vcs = None
+    vcs = detect_vcs(hydra_root)
     if cfg.publish:
-        vcs = detect_vcs(hydra_root)
         ensure_publish_tools(hydra_root, vcs)
         ensure_clean_worktree(hydra_root, vcs)
 
@@ -647,33 +651,41 @@ def run_dev_release(
     if not workflow_ref:
         raise ValueError("workflow_ref must not be empty")
     if cfg.publish:
-        assert vcs is not None
         ensure_publish_base_matches_ref(hydra_root, vcs, workflow_ref)
-    log.info(
-        "Would dispatch Publish to PyPI: ref=%s package_set=%s "
-        "expected_version=%s only=%s publish=true",
-        workflow_ref,
-        package_set,
-        target_version,
-        cfg.only or "<none>",
-    )
+
+    def log_dispatch(verb: str, commit: str) -> None:
+        log.info(
+            "%s Publish to PyPI: ref=%s commit=%s package_set=%s "
+            "expected_version=%s only=%s publish=true",
+            verb,
+            workflow_ref,
+            commit,
+            package_set,
+            target_version,
+            cfg.only or "<none>",
+        )
 
     if not cfg.publish:
+        log_dispatch("Would dispatch", get_current_commit(hydra_root, vcs))
         log.info(
             "Dry run complete. No commit, push, GitHub workflow dispatch, "
             "GitHub Release, or PyPI upload was performed."
         )
         return
 
-    assert vcs is not None
     set_package_versions(cfg, hydra_root, str(target_version))
     if get_worktree_status(hydra_root, vcs):
         commit_dev_release(hydra_root, vcs, target_version)
         push_current_ref(hydra_root, vcs, workflow_ref)
     else:
         log.info("Selected packages are already at %s; skipping commit", target_version)
+
+    # Resolve the published commit once, after any commit and push, so the
+    # commit reported to the operator is the commit that is dispatched.
+    commit = get_current_commit(hydra_root, vcs)
+    log_dispatch("Dispatching", commit)
     dispatch_publish_workflow(
-        hydra_root, vcs, package_set, target_version, workflow_ref, cfg.only
+        hydra_root, vcs, package_set, target_version, workflow_ref, commit, cfg.only
     )
 
 

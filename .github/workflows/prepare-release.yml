@@ -52,6 +52,7 @@ jobs:
     outputs:
       release_kind: ${{ steps.derive.outputs.release_kind }}
       target_branch: ${{ steps.derive.outputs.target_branch }}
+      target_sha: ${{ steps.derive.outputs.target_sha }}
       release_date: ${{ steps.derive.outputs.release_date }}
     steps:
       - name: Derive release kind and target branch
@@ -130,7 +131,10 @@ jobs:
           else:
               release_kind = "patch"
 
-          def branch_exists(branch: str) -> bool:
+          def resolve_branch_sha(branch: str):
+              # Match the fully qualified ref: ls-remote patterns match the tail
+              # component, so a bare name like main would also match a branch
+              # such as release/main and silently resolve the wrong commit.
               result = subprocess.run(
                   [
                       "git",
@@ -138,13 +142,21 @@ jobs:
                       "--exit-code",
                       "--heads",
                       f"https://github.com/{repo}.git",
-                      branch,
+                      f"refs/heads/{branch}",
                   ],
-                  stdout=subprocess.DEVNULL,
-                  stderr=subprocess.DEVNULL,
+                  capture_output=True,
+                  text=True,
                   check=False,
               )
-              return result.returncode == 0
+              if result.returncode != 0:
+                  return None
+              lines = [line for line in result.stdout.splitlines() if line.strip()]
+              if len(lines) != 1:
+                  return None
+              return lines[0].split()[0]
+
+          def branch_exists(branch: str) -> bool:
+              return resolve_branch_sha(branch) is not None
 
           release_branch = f"{release_line}_branch"
           if override:
@@ -166,12 +178,17 @@ jobs:
                   "Create the release branch or use a reviewed override."
               )
 
-          if target_branch != "main" and not branch_exists(target_branch):
+          # Resolve the target branch to an immutable commit so every job in
+          # this run validates the same tree, even if the branch moves while
+          # the run is in flight.
+          target_sha = resolve_branch_sha(target_branch)
+          if target_sha is None:
               fail(f"Target branch {target_branch!r} does not exist")
 
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               print(f"release_kind={release_kind}", file=output)
               print(f"target_branch={target_branch}", file=output)
+              print(f"target_sha={target_sha}", file=output)
               print(f"release_date={release_date}", file=output)
 
           with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as summary:
@@ -187,6 +204,7 @@ jobs:
                       file=summary,
                   )
               print(f"- Target branch: `{target_branch}`", file=summary)
+              print(f"- Target commit: `{target_sha}`", file=summary)
               print(f"- Release date: `{release_date}`", file=summary)
           PY
 
@@ -197,7 +215,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.derive-release.outputs.target_branch }}
+          ref: ${{ needs.derive-release.outputs.target_sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -247,7 +265,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.derive-release.outputs.target_branch }}
+          ref: ${{ needs.derive-release.outputs.target_sha }}
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -359,7 +377,7 @@ jobs:
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ needs.derive-release.outputs.target_branch }}
+          ref: ${{ needs.derive-release.outputs.target_sha }}
 
       - name: Set up Linux
         if: ${{ matrix.os == 'Linux' }}
