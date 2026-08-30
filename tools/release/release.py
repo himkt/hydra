@@ -564,15 +564,6 @@ def get_remote_url(hydra_root: str, vcs: str) -> str:
     return _single_line(["git", "remote", "get-url", "origin"], hydra_root)
 
 
-def get_remote_branch_node(hydra_root: str, vcs: str, workflow_ref: str) -> str:
-    remote_url = get_remote_url(hydra_root, vcs)
-    line = _single_line(
-        ["git", "ls-remote", remote_url, f"refs/heads/{workflow_ref}"],
-        hydra_root,
-    )
-    return line.split()[0]
-
-
 def get_github_repo_slug(remote_url: str) -> str:
     patterns = [
         r"^https://github\.com/(?P<slug>[^/]+/[^/]+?)(?:\.git)?$",
@@ -592,18 +583,21 @@ def get_current_commit(hydra_root: str, vcs: str) -> str:
     return _single_line(["git", "rev-parse", "HEAD"], hydra_root)
 
 
-def ensure_publish_base_matches_ref(
-    hydra_root: str, vcs: str, workflow_ref: str
+def ensure_publish_commit_exists_on_remote(
+    hydra_root: str, vcs: str, commit: str
 ) -> None:
-    current = get_current_commit(hydra_root, vcs)
-    expected = get_remote_branch_node(hydra_root, vcs, workflow_ref)
-
-    if current != expected:
-        raise ValueError(
-            "Publishing requires the current commit to match "
-            f"remote/{workflow_ref} before the version bump. "
-            "Update to the target branch before publishing."
+    try:
+        repo_slug = get_github_repo_slug(get_remote_url(hydra_root, vcs))
+        _run_checked(
+            ["gh", "api", "--silent", f"repos/{repo_slug}/commits/{commit}"],
+            cwd=hydra_root,
         )
+    except (OSError, subprocess.CalledProcessError, ValueError):
+        raise SystemExit(
+            f"Cannot publish commit {commit}: it could not be confirmed on the "
+            "configured GitHub remote.\n"
+            "Push that commit to GitHub or fix GitHub access, then rerun."
+        ) from None
 
 
 def get_worktree_status(hydra_root: str, vcs: str) -> str:
@@ -687,8 +681,14 @@ def run_dev_release(
     if requested_commit:
         validate_release_commit(requested_commit)
 
+    workflow_ref = cfg.workflow_ref.strip()
+    if not workflow_ref:
+        raise ValueError("workflow_ref must not be empty")
+
     vcs = detect_vcs(hydra_root)
+    release_commit = requested_commit or get_current_commit(hydra_root, vcs)
     if cfg.publish:
+        ensure_publish_commit_exists_on_remote(hydra_root, vcs, release_commit)
         ensure_publish_tools(hydra_root, vcs)
         ensure_clean_worktree(hydra_root, vcs)
 
@@ -716,12 +716,6 @@ def run_dev_release(
             set_versions=not requested_commit,
         )
 
-    workflow_ref = cfg.workflow_ref.strip()
-    if not workflow_ref:
-        raise ValueError("workflow_ref must not be empty")
-    if cfg.publish:
-        ensure_publish_base_matches_ref(hydra_root, vcs, workflow_ref)
-
     def log_dispatch(verb: str, commit: str) -> None:
         log.info(
             "%s Publish to PyPI: ref=%s commit=%s package_set=%s "
@@ -735,8 +729,7 @@ def run_dev_release(
         )
 
     if not cfg.publish:
-        commit = requested_commit or get_current_commit(hydra_root, vcs)
-        log_dispatch("Would dispatch", commit)
+        log_dispatch("Would dispatch", release_commit)
         log.info(
             "Dry run complete. No commit, push, GitHub workflow dispatch, "
             "GitHub Release, or PyPI upload was performed."
@@ -744,21 +737,19 @@ def run_dev_release(
         return
 
     if requested_commit:
-        commit = requested_commit
+        commit = release_commit
     else:
         set_package_versions(cfg, hydra_root, str(target_version))
         if get_worktree_status(hydra_root, vcs):
             commit_dev_release(hydra_root, vcs, target_version)
             push_current_ref(hydra_root, vcs, workflow_ref)
+            commit = get_current_commit(hydra_root, vcs)
         else:
             log.info(
                 "Selected packages are already at %s; skipping commit",
                 target_version,
             )
-
-        # Resolve the published commit once, after any commit and push, so the
-        # commit reported to the operator is the commit that is dispatched.
-        commit = get_current_commit(hydra_root, vcs)
+            commit = release_commit
     log_dispatch("Dispatching", commit)
     dispatch_publish_workflow(
         hydra_root, vcs, package_set, target_version, workflow_ref, commit, cfg.only

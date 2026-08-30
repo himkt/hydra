@@ -148,13 +148,14 @@ python tools/release/release.py \
   publish=true
 ```
 
-Publishing requires a clean working tree whose current commit matches
-`remote/<workflow_ref>`. In the normal release flow, the selected packages
-already have the target version because it was set immediately after the
-previous release. The command dispatches `Publish to PyPI` with the selected
-package set, expected version, and exact commit. If the versions differ, it can
-set, commit, and push the target version as a recovery path, then pins the
-resulting current commit so later pushes cannot change what the workflow builds.
+Publishing first confirms that the selected commit exists on the configured
+GitHub remote, without requiring it to be the branch tip. It also requires a
+clean working tree. In the normal release flow, the selected packages already
+have the target version because it was set immediately after the previous
+release. The command dispatches `Publish to PyPI` with the selected package set,
+expected version, and exact commit. If the versions differ, it can set, commit,
+and push the target version as a recovery path, then pins the resulting current
+commit so later pushes cannot change what the workflow builds.
 
 If the branch has already advanced past an unshipped dev release, select its
 existing commit explicitly. The dry run archives that exact commit, requires

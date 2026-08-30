@@ -278,7 +278,9 @@ def test_dev_release_dispatches_the_commit_it_reports_after_bumping(
     monkeypatch.setattr(release, "detect_vcs", lambda hydra_root: "sl")
     monkeypatch.setattr(release, "ensure_publish_tools", lambda *a: None)
     monkeypatch.setattr(release, "ensure_clean_worktree", lambda *a: None)
-    monkeypatch.setattr(release, "ensure_publish_base_matches_ref", lambda *a: None)
+    monkeypatch.setattr(
+        release, "ensure_publish_commit_exists_on_remote", lambda *a: None
+    )
     monkeypatch.setattr(release, "collect_dev_release_package_info", lambda *a: [])
     monkeypatch.setattr(release, "format_dev_release_package_table", lambda infos: "")
     monkeypatch.setattr(release, "fail_if_any_target_version_published", lambda i: None)
@@ -331,6 +333,164 @@ def test_dev_release_dispatches_the_commit_it_reports_after_bumping(
 
     assert dispatched["commit"] == "b" * 40
     assert reported == ["b" * 40]
+
+
+def test_dev_release_pins_initial_current_commit_when_no_bump_is_needed(
+    monkeypatch,
+) -> None:
+    commits = iter(["a" * 40, "b" * 40])
+    dispatched = {}
+
+    monkeypatch.setattr(release, "detect_vcs", lambda hydra_root: "sl")
+    monkeypatch.setattr(release, "get_current_commit", lambda *a: next(commits))
+    monkeypatch.setattr(
+        release, "ensure_publish_commit_exists_on_remote", lambda *a: None
+    )
+    monkeypatch.setattr(release, "ensure_publish_tools", lambda *a: None)
+    monkeypatch.setattr(release, "ensure_clean_worktree", lambda *a: None)
+    monkeypatch.setattr(release, "collect_dev_release_package_info", lambda *a: [])
+    monkeypatch.setattr(release, "format_dev_release_package_table", lambda infos: "")
+    monkeypatch.setattr(release, "fail_if_any_target_version_published", lambda i: None)
+    monkeypatch.setattr(release, "copy_release_workspace", lambda root, tmp: tmp)
+    monkeypatch.setattr(
+        release, "validate_dev_release_artifacts", lambda *a, **kw: None
+    )
+    monkeypatch.setattr(release, "set_package_versions", lambda *a: None)
+    monkeypatch.setattr(release, "get_worktree_status", lambda *a: "")
+    monkeypatch.setattr(
+        release,
+        "dispatch_publish_workflow",
+        lambda *args: dispatched.update(commit=args[5]),
+    )
+
+    cfg = cast(
+        release.Config,
+        OmegaConf.create(
+            {
+                "version": "1.4.0.dev10",
+                "dry_run": False,
+                "publish": True,
+                "workflow_ref": "main",
+                "commit": "",
+                "only": "",
+                "packages": {},
+                "repository": {"name": "pypi"},
+            }
+        ),
+    )
+
+    release.run_dev_release(cfg, "/repo", pathlib.Path("/repo/build"), "hydra-core")
+
+    assert dispatched == {"commit": "a" * 40}
+
+
+def test_missing_remote_commit_exits_with_clean_error(monkeypatch) -> None:
+    commit = "a" * 40
+    monkeypatch.setattr(
+        release,
+        "get_remote_url",
+        lambda hydra_root, vcs: "https://github.com/hydra-ecosystem/hydra",
+    )
+
+    def fail_run_checked(cmd, cwd=None, stdin=None):
+        raise subprocess.CalledProcessError(1, cmd)
+
+    monkeypatch.setattr(release, "_run_checked", fail_run_checked)
+
+    with pytest.raises(SystemExit) as exc_info:
+        release.ensure_publish_commit_exists_on_remote("/repo", "sl", commit)
+
+    assert str(exc_info.value) == (
+        f"Cannot publish commit {commit}: it could not be confirmed on the "
+        "configured GitHub remote.\n"
+        "Push that commit to GitHub or fix GitHub access, then rerun."
+    )
+
+
+def test_publish_commit_check_queries_exact_sha_on_github(monkeypatch) -> None:
+    commit = "a" * 40
+    calls = []
+    monkeypatch.setattr(
+        release,
+        "get_remote_url",
+        lambda hydra_root, vcs: "git@github.com:hydra-ecosystem/hydra.git",
+    )
+
+    def fake_run_checked(cmd, cwd=None, stdin=None):
+        calls.append((cmd, cwd, stdin))
+        return ""
+
+    monkeypatch.setattr(release, "_run_checked", fake_run_checked)
+
+    release.ensure_publish_commit_exists_on_remote("/repo", "sl", commit)
+
+    assert calls == [
+        (
+            [
+                "gh",
+                "api",
+                "--silent",
+                f"repos/hydra-ecosystem/hydra/commits/{commit}",
+            ],
+            "/repo",
+            None,
+        )
+    ]
+
+
+@pytest.mark.parametrize(
+    ("requested_commit", "current_commit", "expected_commit"),
+    [("c" * 40, "a" * 40, "c" * 40), ("", "a" * 40, "a" * 40)],
+)
+def test_dev_release_checks_selected_commit_on_remote_first(
+    monkeypatch, tmp_path, requested_commit, current_commit, expected_commit
+) -> None:
+    events = []
+
+    monkeypatch.setattr(release, "detect_vcs", lambda hydra_root: "sl")
+    monkeypatch.setattr(release, "get_current_commit", lambda *a: current_commit)
+
+    def check_publish_tools(*args):
+        events.append("publish tools")
+
+    def check_clean_worktree(*args):
+        events.append("clean worktree")
+
+    def fail_remote_commit(hydra_root, vcs, commit):
+        events.append(f"remote commit {commit}")
+        raise SystemExit("remote commit missing")
+
+    def archive_workspace(*args):
+        events.append("archive")
+        pytest.fail("archive must not run before remote-commit validation")
+
+    monkeypatch.setattr(release, "ensure_publish_tools", check_publish_tools)
+    monkeypatch.setattr(release, "ensure_clean_worktree", check_clean_worktree)
+    monkeypatch.setattr(
+        release, "ensure_publish_commit_exists_on_remote", fail_remote_commit
+    )
+    monkeypatch.setattr(release, "archive_release_workspace", archive_workspace)
+
+    cfg = cast(
+        release.Config,
+        OmegaConf.create(
+            {
+                "version": "1.4.0.dev9",
+                "dry_run": False,
+                "publish": True,
+                "workflow_ref": "main",
+                "commit": requested_commit,
+                "only": "",
+                "packages": {},
+                "repository": {"name": "pypi"},
+            }
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="remote commit missing"):
+        release.run_dev_release(cfg, "/repo", tmp_path / "build", "hydra-core")
+
+    assert events == [f"remote commit {expected_commit}"]
 
 
 @pytest.mark.parametrize(
@@ -425,7 +585,9 @@ def test_dev_release_dispatches_requested_commit_without_mutating_checkout(
     monkeypatch.setattr(release, "detect_vcs", lambda hydra_root: "sl")
     monkeypatch.setattr(release, "ensure_publish_tools", lambda *a: None)
     monkeypatch.setattr(release, "ensure_clean_worktree", lambda *a: None)
-    monkeypatch.setattr(release, "ensure_publish_base_matches_ref", lambda *a: None)
+    monkeypatch.setattr(
+        release, "ensure_publish_commit_exists_on_remote", lambda *a: None
+    )
     monkeypatch.setattr(
         release,
         "archive_release_workspace",

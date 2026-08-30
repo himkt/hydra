@@ -197,8 +197,9 @@ python tools/release/release.py \
   version=1.4.0.dev3
 ```
 
-To publish the dev release, rerun with `publish=true`. This requires a clean
-working tree whose current commit matches `remote/<workflow_ref>` and dispatches
+To publish the dev release, rerun with `publish=true`. This first confirms that
+the selected commit exists on the configured GitHub remote, without requiring
+it to be the branch tip, and requires a clean working tree. It dispatches
 `Publish to PyPI` with the selected package set, expected version, and the exact
 commit being published. In the normal release flow, the selected packages are
 already at this version because they were bumped immediately after the previous
