@@ -167,12 +167,12 @@ python tools/release/release.py \
 
 Use the PyPI workflow for real dev, release-candidate, and stable releases.
 
-Every run pins one commit for every job. Leave the workflow's `commit` input
-empty to pin the dispatched branch tip, or set it to a full 40-character commit
-SHA to publish that exact commit, for example when the branch has already moved
-past the release you are publishing. The release tool always sends the exact
-commit it publishes, which on the recovery path is the version bump it just
-created, so this input matters only for a manual dispatch.
+Every run pins one commit for every job. By default, the release tool pins its
+final current commit, including a version-bump commit it creates as part of a
+recovery, so later pushes cannot change what the workflow builds. Set
+`commit=<full-commit-sha>` to release an existing commit after the branch has
+already moved past it. The workflow also exposes the same commit input for
+manual dispatches.
 
 For dev releases, use the release tool's dev-release action. By default this is
 a dry run: it shows the selected packages and versions, checks PyPI for the
@@ -215,6 +215,23 @@ python tools/release/release.py \
 The command can set, commit, and push the target version when the selected
 packages do not already match it. Treat that as a recovery path, not the normal
 release cadence.
+
+If the branch was advanced to the next development version before the previous
+one was published, dry-run the existing release commit directly:
+
+```shell
+python tools/release/release.py \
+  action=dev_release \
+  set=hydra-full-release \
+  version=1.4.0.dev3 \
+  commit=<full-commit-sha>
+```
+
+This archives the exact commit, requires every selected package to already have
+the target version, and builds from that tree without changing the current
+checkout. The commit must exist locally and on GitHub. After the dry run passes,
+repeat the same command with `publish=true`. Explicit commit mode never sets
+versions, creates a commit, or pushes the current branch.
 
 Wait for the publish workflow run to finish before advancing anything. The run
 pauses for `pypi-publish` environment approval, so a bump pushed while it waits

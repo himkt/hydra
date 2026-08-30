@@ -71,6 +71,7 @@ class Config:
     version: Optional[str] = None
     publish: bool = False
     workflow_ref: str = "main"
+    commit: str = ""
     only: str = ""
 
 
@@ -386,6 +387,16 @@ def set_package_versions(cfg: Config, hydra_root: str, target_version: str) -> N
         bump_version(cfg, package, hydra_root, target_version=target_version)
 
 
+def validate_package_versions(
+    packages: Dict[str, Package], hydra_root: str, expected_version: Version
+) -> None:
+    for package in packages.values():
+        pkg_path = os.path.normpath(os.path.join(hydra_root, package.path))
+        local = get_local_package_info(pkg_path)
+        validate_local_version(local, expected_version)
+        log.info(f"\U0000274a : {local.name} : {local.local_version}")
+
+
 def _run_checked(
     cmd: List[str], cwd: Optional[str] = None, stdin: Optional[str] = None
 ) -> str:
@@ -446,10 +457,17 @@ def check_build_artifacts(build_dir_path: Path) -> None:
 
 
 def validate_dev_release_artifacts(
-    cfg: Config, hydra_root: str, build_dir_path: Path, target_version: Version
+    cfg: Config,
+    hydra_root: str,
+    build_dir_path: Path,
+    target_version: Version,
+    set_versions: bool = True,
 ) -> None:
+    if set_versions:
+        set_package_versions(cfg, hydra_root, str(target_version))
+    else:
+        validate_package_versions(cfg.packages, hydra_root, target_version)
     prepare_build_dir(cfg, build_dir_path)
-    set_package_versions(cfg, hydra_root, str(target_version))
     for package in cfg.packages.values():
         pkg_path = os.path.normpath(os.path.join(hydra_root, package.path))
         build_package(cfg, pkg_path, str(build_dir_path))
@@ -474,6 +492,42 @@ def copy_release_workspace(hydra_root: str, destination: Path) -> Path:
             "temp",
         ),
     )
+    return workspace
+
+
+def validate_release_commit(commit: str) -> str:
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise ValueError(
+            f"commit must be a full 40-character lowercase SHA; got {commit!r}"
+        )
+    return commit
+
+
+def archive_release_workspace(
+    hydra_root: str, vcs: str, commit: str, destination: Path
+) -> Path:
+    workspace = destination / "hydra"
+    if vcs == "sl":
+        _run_checked(
+            ["sl", "archive", "-r", commit, "-I", "glob:**", str(workspace)],
+            cwd=hydra_root,
+        )
+    else:
+        archive = destination / "hydra.tar"
+        _run_checked(
+            [
+                "git",
+                "archive",
+                "--format=tar",
+                "--output",
+                str(archive),
+                commit,
+            ],
+            cwd=hydra_root,
+        )
+        workspace.mkdir()
+        shutil.unpack_archive(str(archive), str(workspace))
+        archive.unlink()
     return workspace
 
 
@@ -629,22 +683,37 @@ def run_dev_release(
         )
     target_version = parse_version(cfg.version)
     validate_dev_version(target_version)
+    requested_commit = cfg.commit.strip()
+    if requested_commit:
+        validate_release_commit(requested_commit)
 
     vcs = detect_vcs(hydra_root)
     if cfg.publish:
         ensure_publish_tools(hydra_root, vcs)
         ensure_clean_worktree(hydra_root, vcs)
 
-    infos = collect_dev_release_package_info(
-        cfg.repository, cfg.packages, hydra_root, target_version
-    )
-    log.info("Dev release package plan:\n%s", format_dev_release_package_table(infos))
-    fail_if_any_target_version_published(infos)
-
     with tempfile.TemporaryDirectory(prefix="hydra-dev-release-") as tmp:
-        workspace = copy_release_workspace(hydra_root, Path(tmp))
+        if requested_commit:
+            workspace = archive_release_workspace(
+                hydra_root, vcs, requested_commit, Path(tmp)
+            )
+        else:
+            workspace = copy_release_workspace(hydra_root, Path(tmp))
+
+        infos = collect_dev_release_package_info(
+            cfg.repository, cfg.packages, str(workspace), target_version
+        )
+        log.info(
+            "Dev release package plan:\n%s", format_dev_release_package_table(infos)
+        )
+        fail_if_any_target_version_published(infos)
+
         validate_dev_release_artifacts(
-            cfg, str(workspace), build_dir_path, target_version
+            cfg,
+            str(workspace),
+            build_dir_path,
+            target_version,
+            set_versions=not requested_commit,
         )
 
     workflow_ref = cfg.workflow_ref.strip()
@@ -666,23 +735,30 @@ def run_dev_release(
         )
 
     if not cfg.publish:
-        log_dispatch("Would dispatch", get_current_commit(hydra_root, vcs))
+        commit = requested_commit or get_current_commit(hydra_root, vcs)
+        log_dispatch("Would dispatch", commit)
         log.info(
             "Dry run complete. No commit, push, GitHub workflow dispatch, "
             "GitHub Release, or PyPI upload was performed."
         )
         return
 
-    set_package_versions(cfg, hydra_root, str(target_version))
-    if get_worktree_status(hydra_root, vcs):
-        commit_dev_release(hydra_root, vcs, target_version)
-        push_current_ref(hydra_root, vcs, workflow_ref)
+    if requested_commit:
+        commit = requested_commit
     else:
-        log.info("Selected packages are already at %s; skipping commit", target_version)
+        set_package_versions(cfg, hydra_root, str(target_version))
+        if get_worktree_status(hydra_root, vcs):
+            commit_dev_release(hydra_root, vcs, target_version)
+            push_current_ref(hydra_root, vcs, workflow_ref)
+        else:
+            log.info(
+                "Selected packages are already at %s; skipping commit",
+                target_version,
+            )
 
-    # Resolve the published commit once, after any commit and push, so the
-    # commit reported to the operator is the commit that is dispatched.
-    commit = get_current_commit(hydra_root, vcs)
+        # Resolve the published commit once, after any commit and push, so the
+        # commit reported to the operator is the commit that is dispatched.
+        commit = get_current_commit(hydra_root, vcs)
     log_dispatch("Dispatching", commit)
     dispatch_publish_workflow(
         hydra_root, vcs, package_set, target_version, workflow_ref, commit, cfg.only
@@ -772,11 +848,7 @@ def main(cfg: Config) -> None:
             )
         expected_version = parse_version(cfg.version)
         log.info(f"Validating package versions match {expected_version}")
-        for package in cfg.packages.values():
-            pkg_path = os.path.normpath(os.path.join(hydra_root, package.path))
-            local = get_local_package_info(pkg_path)
-            validate_local_version(local, expected_version)
-            log.info(f"\U0000274a : {local.name} : {local.local_version}")
+        validate_package_versions(cfg.packages, hydra_root, expected_version)
     elif cfg.action == Action.dev_release:
         run_dev_release(cfg, hydra_root, build_dir_path, package_set)
 

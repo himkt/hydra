@@ -283,7 +283,9 @@ def test_dev_release_dispatches_the_commit_it_reports_after_bumping(
     monkeypatch.setattr(release, "format_dev_release_package_table", lambda infos: "")
     monkeypatch.setattr(release, "fail_if_any_target_version_published", lambda i: None)
     monkeypatch.setattr(release, "copy_release_workspace", lambda root, tmp: tmp)
-    monkeypatch.setattr(release, "validate_dev_release_artifacts", lambda *a: None)
+    monkeypatch.setattr(
+        release, "validate_dev_release_artifacts", lambda *a, **kw: None
+    )
     monkeypatch.setattr(release, "set_package_versions", lambda *a: None)
     monkeypatch.setattr(
         release, "get_worktree_status", lambda *a: "M hydra/__init__.py"
@@ -310,6 +312,7 @@ def test_dev_release_dispatches_the_commit_it_reports_after_bumping(
                 "dry_run": False,
                 "publish": True,
                 "workflow_ref": "main",
+                "commit": "",
                 "only": "",
                 "packages": {},
                 "repository": {"name": "pypi"},
@@ -328,6 +331,157 @@ def test_dev_release_dispatches_the_commit_it_reports_after_bumping(
 
     assert dispatched["commit"] == "b" * 40
     assert reported == ["b" * 40]
+
+
+@pytest.mark.parametrize(
+    "commit",
+    [
+        "f67e393af44e",
+        "F" * 40,
+        "main",
+        "main; rm -rf /",
+    ],
+)
+def test_validate_release_commit_rejects_invalid_commit(commit: str) -> None:
+    with pytest.raises(ValueError, match="full 40-character lowercase SHA"):
+        release.validate_release_commit(commit)
+
+
+def test_archive_release_workspace_uses_selected_sapling_commit(
+    monkeypatch, tmp_path
+) -> None:
+    calls = []
+    commit = "a" * 40
+
+    def fake_run_checked(cmd, cwd=None, stdin=None):
+        calls.append((cmd, cwd, stdin))
+        return ""
+
+    monkeypatch.setattr(release, "_run_checked", fake_run_checked)
+
+    workspace = release.archive_release_workspace("/repo", "sl", commit, tmp_path)
+
+    assert workspace == tmp_path / "hydra"
+    assert calls == [
+        (
+            ["sl", "archive", "-r", commit, "-I", "glob:**", str(workspace)],
+            "/repo",
+            None,
+        )
+    ]
+
+
+def test_archive_release_workspace_uses_selected_git_commit(
+    monkeypatch, tmp_path
+) -> None:
+    calls = []
+    unpacked = []
+    commit = "b" * 40
+
+    def fake_run_checked(cmd, cwd=None, stdin=None):
+        calls.append((cmd, cwd, stdin))
+        pathlib.Path(cmd[4]).touch()
+        return ""
+
+    monkeypatch.setattr(release, "_run_checked", fake_run_checked)
+    monkeypatch.setattr(
+        release.shutil,
+        "unpack_archive",
+        lambda archive, workspace: unpacked.append((archive, workspace)),
+    )
+
+    workspace = release.archive_release_workspace("/repo", "git", commit, tmp_path)
+
+    archive = tmp_path / "hydra.tar"
+    assert workspace == tmp_path / "hydra"
+    assert calls == [
+        (
+            [
+                "git",
+                "archive",
+                "--format=tar",
+                "--output",
+                str(archive),
+                commit,
+            ],
+            "/repo",
+            None,
+        )
+    ]
+    assert unpacked == [(str(archive), str(workspace))]
+    assert not archive.exists()
+
+
+def test_dev_release_dispatches_requested_commit_without_mutating_checkout(
+    monkeypatch, tmp_path
+) -> None:
+    commit = "c" * 40
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    dispatched = {}
+    mutations = []
+    validation = {}
+
+    monkeypatch.setattr(release, "detect_vcs", lambda hydra_root: "sl")
+    monkeypatch.setattr(release, "ensure_publish_tools", lambda *a: None)
+    monkeypatch.setattr(release, "ensure_clean_worktree", lambda *a: None)
+    monkeypatch.setattr(release, "ensure_publish_base_matches_ref", lambda *a: None)
+    monkeypatch.setattr(
+        release,
+        "archive_release_workspace",
+        lambda hydra_root, vcs, selected_commit, destination: workspace,
+    )
+    monkeypatch.setattr(release, "collect_dev_release_package_info", lambda *a: [])
+    monkeypatch.setattr(release, "format_dev_release_package_table", lambda infos: "")
+    monkeypatch.setattr(release, "fail_if_any_target_version_published", lambda i: None)
+
+    def fake_validate_artifacts(
+        cfg, release_root, build_dir, target_version, set_versions=True
+    ):
+        validation["root"] = release_root
+        validation["set_versions"] = set_versions
+
+    monkeypatch.setattr(
+        release, "validate_dev_release_artifacts", fake_validate_artifacts
+    )
+    monkeypatch.setattr(
+        release, "set_package_versions", lambda *a: mutations.append("set versions")
+    )
+    monkeypatch.setattr(
+        release, "commit_dev_release", lambda *a: mutations.append("commit")
+    )
+    monkeypatch.setattr(
+        release, "push_current_ref", lambda *a: mutations.append("push")
+    )
+
+    def fake_dispatch(
+        hydra_root, vcs, package_set, target_version, ref, selected_commit, only
+    ):
+        dispatched["commit"] = selected_commit
+
+    monkeypatch.setattr(release, "dispatch_publish_workflow", fake_dispatch)
+
+    cfg = cast(
+        release.Config,
+        OmegaConf.create(
+            {
+                "version": "1.4.0.dev9",
+                "dry_run": False,
+                "publish": True,
+                "workflow_ref": "main",
+                "commit": commit,
+                "only": "",
+                "packages": {},
+                "repository": {"name": "pypi"},
+            }
+        ),
+    )
+
+    release.run_dev_release(cfg, "/repo", tmp_path / "build", "hydra-core")
+
+    assert dispatched["commit"] == commit
+    assert mutations == []
+    assert validation == {"root": str(workspace), "set_versions": False}
 
 
 def test_check_build_artifacts_upgrades_smoke_environment_pip(

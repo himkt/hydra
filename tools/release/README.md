@@ -152,10 +152,27 @@ Publishing requires a clean working tree whose current commit matches
 `remote/<workflow_ref>`. In the normal release flow, the selected packages
 already have the target version because it was set immediately after the
 previous release. The command dispatches `Publish to PyPI` with the selected
-package set and expected version. If the versions differ, it can set, commit,
-and push the target version as a recovery path. It uses `workflow_ref=main` by
-default; use `workflow_ref=<branch-or-tag>` for unusual cases such as publishing
-a dev release from an already-published release line.
+package set, expected version, and exact commit. If the versions differ, it can
+set, commit, and push the target version as a recovery path, then pins the
+resulting current commit so later pushes cannot change what the workflow builds.
+
+If the branch has already advanced past an unshipped dev release, select its
+existing commit explicitly. The dry run archives that exact commit, requires
+the selected package versions to already match, and builds its artifacts without
+changing the current checkout:
+
+```shell
+python tools/release/release.py \
+  action=dev_release \
+  set=hydra-full-release \
+  version=1.4.0.dev3 \
+  commit=<full-commit-sha>
+```
+
+After the dry run passes, repeat the command with `publish=true`. Explicit
+commit mode never sets versions, commits, or pushes; the commit must already
+exist locally and on GitHub. The tool uses `workflow_ref=main` by default; use
+`workflow_ref=<branch-or-tag>` for unusual release lines.
 
 After the publish workflow succeeds, immediately set the next coordinated
 development version, commit, and push it before resuming development:
