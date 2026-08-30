@@ -17,7 +17,8 @@ The final signing artifact was published with the following identity:
 
 - Coverage Date: `2026-08-30T12:04:43Z`
 - Public Gist: <https://gist.github.com/omry/72b79478299f8ae250ccf5aa9d1e14f5>
-- Gist revision: `b4b9e98dd336de9e18bd3bae5c99c70a9202794a`
+- Gist file: `Hydra Individual CLA.md`
+- Gist revision: `28437334c56c04d8d67eb0bd4870efc5c4ba7871`
 - Git blob SHA-1: `04ff696cbcf46f26fbff93e4261c25fd2ce4724d`
 - SHA-256: `c43dcca13455c08f3aee04ffccb0aaf327d889efdf76c90d2ecef6e90136a2ed`
 
