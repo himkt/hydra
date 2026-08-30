@@ -148,12 +148,13 @@ def test_filter_packages_rejects_unknown_packages() -> None:
         filter_packages(packages, "hydra_rq_launcher")
 
 
-def test_dispatch_publish_workflow_uses_json_boolean_input(monkeypatch) -> None:
+def test_dispatch_publish_workflow_reports_approval_link(monkeypatch, caplog) -> None:
     calls = []
+    run_url = "https://github.com/hydra-ecosystem/hydra/actions/runs/123"
 
     def fake_run_checked(cmd, cwd=None, stdin=None):
         calls.append((cmd, cwd, stdin))
-        return ""
+        return f"{run_url}\n"
 
     monkeypatch.setattr(release, "_run_checked", fake_run_checked)
     monkeypatch.setattr(
@@ -162,15 +163,16 @@ def test_dispatch_publish_workflow_uses_json_boolean_input(monkeypatch) -> None:
         lambda hydra_root, vcs: "https://github.com/hydra-ecosystem/hydra",
     )
 
-    release.dispatch_publish_workflow(
-        "/repo",
-        "sl",
-        "hydra-full-release",
-        parse_version("1.4.0.dev3"),
-        "main",
-        "a" * 40,
-        "hydra_optuna_sweeper",
-    )
+    with caplog.at_level(logging.INFO, logger=release.log.name):
+        release.dispatch_publish_workflow(
+            "/repo",
+            "sl",
+            "hydra-full-release",
+            parse_version("1.4.0.dev3"),
+            "main",
+            "a" * 40,
+            "hydra_optuna_sweeper",
+        )
 
     assert calls == [
         (
@@ -193,6 +195,37 @@ def test_dispatch_publish_workflow_uses_json_boolean_input(monkeypatch) -> None:
             '"only": "hydra_optuna_sweeper"}',
         )
     ]
+    assert caplog.messages[-1] == (
+        "The workflow will build and verify artifacts before waiting for "
+        f"pypi-publish approval. Approve the PyPI upload within 7 days at: {run_url}"
+    )
+
+
+def test_publish_workflow_gates_only_the_pypi_upload() -> None:
+    workflow = pathlib.Path(".github/workflows/publish.yml").read_text()
+
+    assert workflow.count("environment: pypi-publish") == 1
+    assert re.search(
+        r"\n  pypi-publish:\n.*?\n    environment: pypi-publish\n",
+        workflow,
+        re.S,
+    )
+
+
+def test_publish_workflow_cleans_up_transient_artifacts() -> None:
+    workflow = pathlib.Path(".github/workflows/publish.yml").read_text()
+    cleanup_job = workflow.split("\n  cleanup-artifact:\n", maxsplit=1)[1]
+
+    assert "retention-days: 7" in workflow
+    assert "artifact_id: ${{ steps.upload-artifacts.outputs.artifact-id }}" in workflow
+    assert "- pypi-publish" in cleanup_job
+    assert "actions: write" in cleanup_job
+    assert "contents:" not in cleanup_job
+    assert "continue-on-error: true" in cleanup_job
+    assert (
+        "ARTIFACT_ID: ${{ needs.build-artifacts.outputs.artifact_id }}" in cleanup_job
+    )
+    assert "gh api --method DELETE" in cleanup_job
 
 
 def _run_publish_plan(commit: str, head_sha: str = "b" * 40, ref: str = "main"):

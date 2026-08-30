@@ -642,7 +642,7 @@ def dispatch_publish_workflow(
         "publish": "true",
         "only": only,
     }
-    _run_checked(
+    output = _run_checked(
         [
             "gh",
             "workflow",
@@ -656,6 +656,15 @@ def dispatch_publish_workflow(
         ],
         cwd=hydra_root,
         stdin=json.dumps(inputs),
+    )
+    run_url = next(
+        (line for line in reversed(output.splitlines()) if line.startswith("https://")),
+        f"https://github.com/{repo_slug}/actions/workflows/publish.yml",
+    )
+    log.info(
+        "The workflow will build and verify artifacts before waiting for "
+        "pypi-publish approval. Approve the PyPI upload within 7 days at: %s",
+        run_url,
     )
 
 

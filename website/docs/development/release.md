@@ -235,10 +235,13 @@ repeat the same command with `publish=true`. Explicit commit mode never sets
 versions, creates a commit, or pushes the current branch.
 
 Wait for the publish workflow run to finish before advancing anything. The run
-pauses for `pypi-publish` environment approval, so a bump pushed while it waits
-lands on the branch before the build job starts. Once the run succeeds,
-immediately advance the selected packages to the next development version,
-commit, and push the change before resuming development:
+builds and verifies artifacts, then pauses for `pypi-publish` environment
+approval immediately before upload. Approve within seven days, before the
+transient artifacts expire. Every job uses the pinned commit, so later pushes
+cannot change the artifacts awaiting approval. A successful upload deletes the
+transient artifacts. Once the run succeeds, immediately advance the selected
+packages to the next development version, commit, and push the change before
+resuming development:
 
 ```shell
 python tools/release/release.py \

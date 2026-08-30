@@ -47,9 +47,8 @@ permissions:
 # Use separate jobs for planning, building, and publishing so that write
 # permissions are only accessible to the publishing job.
 #
-# Artifact building and publishing run under the pypi-publish environment,
-# which is configured to require review and approval from authorized
-# maintainers.
+# Artifact building runs before approval. Only the publishing job uses the
+# pypi-publish environment, so its required review gates the actual upload.
 jobs:
   release-plan:
     name: Validate release plan
@@ -149,7 +148,8 @@ jobs:
     name: Build distribution artifacts
     needs: release-plan
     runs-on: ubuntu-latest
-    environment: pypi-publish
+    outputs:
+      artifact_id: ${{ steps.upload-artifacts.outputs.artifact-id }}
     steps:
     - uses: actions/checkout@v5
       with:
@@ -256,11 +256,12 @@ jobs:
         } >> "${GITHUB_STEP_SUMMARY}"
 
     - name: Upload artifacts
+      id: upload-artifacts
       uses: actions/upload-artifact@v4
       with:
         name: dist
         path: dist/
-        retention-days: 0
+        retention-days: 7
 
   pypi-publish:
     needs:
@@ -282,3 +283,21 @@ jobs:
 
     - name: Publish package distributions to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1
+
+  cleanup-artifact:
+    name: Delete transient distribution artifact
+    needs:
+      - build-artifacts
+      - pypi-publish
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+    steps:
+    - name: Delete build artifact
+      continue-on-error: true
+      env:
+        ARTIFACT_ID: ${{ needs.build-artifacts.outputs.artifact_id }}
+        GH_TOKEN: ${{ github.token }}
+      run: >-
+        gh api --method DELETE
+        "repos/${GITHUB_REPOSITORY}/actions/artifacts/${ARTIFACT_ID}"
