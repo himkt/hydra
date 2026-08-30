@@ -99,7 +99,7 @@ registrations are already too late for Hydra's normal initial composition.
 
 ## Deployment and lifecycle
 
-The accelerator is installed as a [Reploy](https://reploy.yadan.net/)
+The accelerator is installed as a [Reploy](https://reploy.cli.dev/)
 application:
 
 ```text

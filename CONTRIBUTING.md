@@ -92,12 +92,17 @@ CI enforces this policy for newly added Python files. Other first-party source
 files are checked during review.
 
 ## Contributor License Agreement ("CLA")
-Hydra is preparing a new project-controlled CLA. Code contributions cannot be
-accepted unless the contributor signs the new CLA once it is published. If you
-would prefer to review its terms before contributing, please wait a few days
-for it to become available.
+Hydra requires contributors to accept the
+[Hydra Individual Contributor License Agreement](https://hydra.cc/legal/individual-cla/)
+before their contributions can be accepted. CLA Assistant checks pull requests
+and provides a signing link when a signature is required.
 
-Pull requests already open during the transition will be handled individually.
+Before signing, make sure that you have the right to grant the rights in the
+agreement. Employment alone does not automatically require an Entity CLA, but
+you must obtain any approval or waiver required by your employment or other
+obligations. If your employer wants to contribute to Hydra as an entity,
+contact [cla@hydra.cc](mailto:cla@hydra.cc). Entity CLAs are handled
+manually and are not signed through CLA Assistant.
 
 ## Issues
 We use GitHub issues to track public bugs. Please ensure your description is

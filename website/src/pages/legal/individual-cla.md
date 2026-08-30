@@ -1,15 +1,7 @@
 ---
 title: Hydra Individual Contributor License Agreement
-description: Draft individual contributor agreement for Hydra.
-draft: true
+description: Individual contributor agreement for Hydra.
 ---
-
-# DRAFT - NOT FOR SIGNATURE
-
-This review draft selects the standard Harmony Individual Contributor License
-Agreement, copyright-license form, with outbound-license Option Five. Its legal
-terms remain under review, and activation-specific fields remain visibly
-marked. It has not completed the signing-service pilot or publication review.
 
 # Hydra Individual Contributor License Agreement
 
@@ -261,7 +253,7 @@ maximum extent possible under law.
 Agreement record:
 
 - Agreement version: 1.0
-- Coverage Date: [COVERAGE DATE AND TIME IN UTC]
+- Coverage Date: 2026-08-30T12:04:43Z
 - Supersedes Agreement Version(s): None
 
 You:
@@ -276,7 +268,7 @@ Us:
 
 - Name: Omry Yadan
 - Title: Hydra project steward
-- Contact: hydra@yadan.net
+- Contact: cla@hydra.cc
 
 ---
 
@@ -285,5 +277,4 @@ Adapted from the Harmony Individual Contributor License Agreement, Version
 License. The copyright-license form and standard Option Five were selected,
 project scope was narrowed to Hydra, Omry Yadan was identified as the recipient,
 and prospective coverage, versioning, signing, employment-obligation, and
-third-party-material provisions were added. This draft has not been approved for
-signature.
+third-party-material provisions were added.

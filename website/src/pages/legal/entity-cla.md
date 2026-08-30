@@ -29,7 +29,7 @@ granted by this Agreement.
 This contributor agreement ("Agreement") documents the rights granted by
 contributors to Us. The Entity CLA is an exceptional, manually handled path.
 Before submitting a Contribution on behalf of a Legal Entity, contact Us at
-hydra@yadan.net. If We agree to use an Entity CLA, We will provide execution
+cla@hydra.cc. If We agree to use an Entity CLA, We will provide execution
 instructions. This is a legally binding document, so please read it carefully
 before agreeing to it.
 
@@ -301,7 +301,7 @@ Us:
 
 - Name: Omry Yadan
 - Title: Hydra project steward
-- Contact: hydra@yadan.net
+- Contact: cla@hydra.cc
 - Acceptance signature and execution date: [SIGNATURE AND UTC DATE]
 
 ---

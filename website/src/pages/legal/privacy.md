@@ -6,7 +6,7 @@ slug: /privacy
 
 # Privacy policy
 
-_Last updated: August 12, 2026_
+_Last updated: August 30, 2026_
 
 This policy explains how the Hydra project handles information when you visit
 the Hydra website at [hydra.cc](https://hydra.cc/).
@@ -40,6 +40,62 @@ more information, see
 [Google's explanation of how it uses information from sites that use its services](https://policies.google.com/technologies/partner-sites)
 and the [Google Privacy Policy](https://policies.google.com/privacy).
 
+## Contributor License Agreement signing
+
+Hydra uses the SAP-hosted
+[CLA Assistant](https://cla-assistant.io/) service to administer its Individual
+Contributor License Agreement (CLA). Signing takes place on CLA Assistant, not
+on the Hydra website. CLA Assistant authenticates you through GitHub and
+records your acceptance of the agreement version displayed to you.
+
+The signing flow records:
+
+- your GitHub username and repository context;
+- your full legal name and email address;
+- your confirmation that you are at least eighteen years old;
+- the CLA title, Gist URL, and exact Gist revision;
+- when you signed and, if applicable, when the service recorded a revocation;
+  and
+- the service's organization-signing indicator. Hydra does not use CLA
+  Assistant to execute Entity CLAs.
+
+Hydra uses this information to determine whether contributions may be merged,
+administer the CLA, preserve evidence of the agreement and rights granted, and
+resolve questions or disputes about contribution authorization. Public pull
+requests may display a CLA status or comment stating whether the relevant
+contributors have signed. Hydra does not publish signers' legal names or email
+addresses.
+
+SAP SE controls CLA Assistant and processes signing information under its own
+[CLA Assistant Privacy Statement](https://gist.github.com/CLAassistant/3a73e4cd729c9d0a6e30).
+SAP states that it obtains GitHub identity information from GitHub, makes signed
+agreement information available to project owners, and may use SAP group
+companies and service providers or transfer information internationally. Your
+use of GitHub is also subject to the
+[GitHub Privacy Statement](https://docs.github.com/en/site-policy/privacy-policies/github-general-privacy-statement).
+
+Hydra may export signing records from CLA Assistant for independent evidence,
+backup, recovery, and service continuity. These exports are kept private, and
+access is limited to the Hydra project steward and any person specifically
+authorized to administer Hydra's contributor agreements.
+
+Hydra retains the agreement version and signing evidence for as long as
+reasonably necessary to establish the agreement and the continuing rights it
+granted, administer contributions, and assert or defend legal claims. This may
+continue after you stop contributing or after CLA Assistant records a
+revocation. Hydra treats a recorded revocation as preventing new contributions
+from being accepted unless you sign again; it does not revoke licenses already
+granted for Contributions covered by the Agreement.
+
+For access, correction, deletion, restriction, or other requests concerning
+SAP's copy of your information, contact
+[cla_assistant@sap.com](mailto:cla_assistant@sap.com). SAP explains in its
+privacy statement that legal obligations or prevailing rights may limit
+deletion. For requests concerning Hydra's exported records, contact
+[privacy@hydra.cc](mailto:privacy@hydra.cc). Hydra may need to retain the
+original acceptance evidence, but can correct current contact information or
+attach an appropriate correction to the historical record.
+
 ## Other service providers and external sites
 
 The website is delivered using Cloudflare and GitHub Pages, and its search
@@ -69,4 +125,4 @@ update the date at the top of this page when we do.
 ## Contact
 
 For questions or requests about this policy, email
-[hydra@yadan.net](mailto:hydra@yadan.net).
+[privacy@hydra.cc](mailto:privacy@hydra.cc).

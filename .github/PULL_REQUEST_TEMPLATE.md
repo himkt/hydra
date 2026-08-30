@@ -1,11 +1,12 @@
 <!-- Thank you for sending a PR and taking the time to improve Hydra -->
 
-## Contributor License Agreement transition
+## Contributor License Agreement
 
-Hydra is preparing a new project-controlled Contributor License Agreement
-(CLA). Code contributions cannot be accepted unless the contributor signs the
-new CLA once it is published. If you would prefer to review its terms before
-contributing, please wait a few days for it to become available.
+Hydra requires contributors to accept its
+[Individual Contributor License Agreement](https://hydra.cc/legal/individual-cla/).
+CLA Assistant will check the pull request and provide a signing link if needed.
+Obtain any approval required by your employer or other obligations before
+signing.
 
 ## Motivation
 

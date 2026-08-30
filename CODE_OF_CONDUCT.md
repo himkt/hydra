@@ -18,7 +18,7 @@ This policy applies in Hydra repositories, discussions, issue trackers, and
 other project spaces, as well as when someone officially represents Hydra.
 
 Report violations privately to the Hydra project steward at
-[hydra@yadan.net](mailto:hydra@yadan.net). Reports will be reviewed fairly and
+[conduct@hydra.cc](mailto:conduct@hydra.cc). Reports will be reviewed fairly and
 kept confidential to the extent reasonably possible.
 
 The project steward may remove content, issue a warning, temporarily restrict
