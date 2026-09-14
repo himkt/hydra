@@ -1,4 +1,5 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
+import functools
 import os
 import sys
 import warnings
@@ -19,7 +20,7 @@ from hydra.test_utils.test_utils import (
     run_process,
     run_python_script,
 )
-from hydra.utils import instantiate
+from hydra.utils import execution_whitelist, instantiate
 from omegaconf import DictConfig, OmegaConf
 from optuna.distributions import (
     BaseDistribution,
@@ -371,6 +372,40 @@ def test_optuna_custom_search_space_example(tmpdir: Path) -> None:
     )
     w = returns["best_params"]["+w"]
     assert 0 <= w <= 1
+
+
+def test_custom_search_space_is_resolved_through_instantiate() -> None:
+    def create_sweeper(custom_search_space: str) -> _impl.OptunaSweeperImpl:
+        return _impl.OptunaSweeperImpl(
+            sampler=optuna.samplers.RandomSampler(),
+            direction="minimize",
+            storage=None,
+            study_name=None,
+            n_trials=1,
+            n_jobs=1,
+            max_failure_rate=0.0,
+            custom_search_space=custom_search_space,
+            params=None,
+        )
+
+    with raises(InstantiationException, match="os.system"):
+        create_sweeper("os.system")
+
+    callback = (
+        "hydra_plugins.hydra_optuna_sweeper._impl."
+        "create_optuna_distribution_from_override"
+    )
+    with execution_whitelist([]):
+        with raises(
+            InstantiationException, match="not in the Hydra execution whitelist"
+        ):
+            create_sweeper(callback)
+
+    with execution_whitelist(callback):
+        sweeper = create_sweeper(callback)
+    extender = sweeper.custom_search_space_extender
+    assert isinstance(extender, functools.partial)
+    assert extender.func is _impl.create_optuna_distribution_from_override
 
 
 @mark.parametrize("max_failure_rate", (0.5, 1.0))

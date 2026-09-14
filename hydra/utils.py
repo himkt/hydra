@@ -9,10 +9,10 @@ from typing import Any, Callable
 import hydra._internal.instantiate._instantiate2
 import hydra.types
 from hydra._internal.deprecation_warning import deprecation_warning
-from hydra._internal.target_policy import (
+from hydra._internal.execution_policy import (
     UNSAFE_DISABLE_EXECUTION_CHECKS as UNSAFE_DISABLE_EXECUTION_CHECKS,
 )
-from hydra._internal.target_policy import (
+from hydra._internal.execution_policy import (
     execution_whitelist as execution_whitelist,
 )
 from hydra._internal.utils import _locate
@@ -30,6 +30,10 @@ def get_class(path: str) -> type:
     """
     Look up a class based on a dotpath.
     Fails if the path does not point to a class.
+
+    This low-level lookup API does not enforce Hydra's execution policy. The
+    path must be trusted and must not come from untrusted configuration. Use
+    instantiate() for config-driven object lookup.
 
     >>> import my_module
     >>> from hydra.utils import get_class
@@ -52,6 +56,10 @@ def get_method(path: str) -> Callable[..., Any]:
     """
     Look up a callable based on a dotpath.
     Fails if the path does not point to a callable object.
+
+    This low-level lookup API does not enforce Hydra's execution policy. The
+    path must be trusted and must not come from untrusted configuration. Use
+    instantiate() for config-driven object lookup.
 
     >>> import my_module
     >>> from hydra.utils import get_method
@@ -79,6 +87,10 @@ def get_object(path: str) -> Any:
     """
     Look up an entity based on the dotpath.
     Does not perform any type checks on the entity.
+
+    This low-level lookup API does not enforce Hydra's execution policy. The
+    path must be trusted and must not come from untrusted configuration. Use
+    instantiate() for config-driven object lookup.
 
     >>> import my_module
     >>> from hydra.utils import get_object

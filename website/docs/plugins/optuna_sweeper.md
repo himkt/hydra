@@ -260,6 +260,19 @@ This means you can work directly with the `optuna.trial.Trial` object to suggest
 To use this feature, define a python function with signature `Callable[[DictConfig, optuna.trial.Trial], None]`
 and set the `hydra.sweeper.custom_search_space` key in your config to target that function.
 
+The callback path is selected by configuration. When using an execution
+whitelist, authorize that path from trusted Python code:
+
+```python
+@hydra.main(
+    config_path="custom-search-space",
+    config_name="config",
+    execution_whitelist="custom-search-space-objective.configure",
+)
+def multi_dimensional_sphere(cfg: DictConfig) -> float:
+    ...
+```
+
 You can find a full example in the same directory as before, where `example/custom-search-space-objective.py` implements a benchmark function to be minimized.
 The example shows the use of Optuna's [pythonic search spaces](https://optuna.readthedocs.io/en/stable/tutorial/10_key_features/002_configurations.html) in combination with Hydra.
 Part of the search space configuration is defined in config files, and part of it is written in Python.
@@ -286,7 +299,7 @@ Part of the search space configuration is defined in config files, and part of i
         y: choice(-5, 0, 5)
       # `custom_search_space` should be a dotpath pointing to a
       # callable that provides search-space configuration logic:
-      custom_search_space: .custom-search-space-objective.configure
+      custom_search_space: custom-search-space-objective.configure
 
   x: 1
   y: 1

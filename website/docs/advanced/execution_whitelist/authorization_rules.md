@@ -1,12 +1,18 @@
 ---
-id: target_rules
-title: Target authorization rules
-sidebar_label: Target rules
+id: authorization_rules
+title: Execution authorization rules
+sidebar_label: Authorization rules
 ---
 
 Hydra authorizes every callable that composed configuration can select.
 Authorizing one callable does not automatically authorize another callable that
 it selects or returns.
+
+Here, selection means resolving a config-controlled target or discovery path,
+or choosing a callable result based on declarative arguments. Live Python
+objects embedded directly in a config by trusted Python code—including custom
+string or callable subclasses—are trusted inputs and are not recursively
+analyzed as a Python sandbox would analyze them.
 
 ## Configured names and resolved identities
 
@@ -30,6 +36,11 @@ Some targets select another callable from configuration. In those cases, both
 the selector and the selected callable require authorization.
 
 ### Discovery helpers
+
+`hydra.utils.get_class`, `get_method`, `get_static_method`, and `get_object` are
+low-level lookup APIs. Direct calls do not enforce Hydra's execution policy;
+their `path` must be trusted and must never come from untrusted configuration.
+Use `instantiate()` for config-driven lookup.
 
 When `hydra.utils.get_class`, `get_method`, `get_static_method`, or `get_object`
 is an instantiate target, its `path` argument selects another object. Whitelist
@@ -70,6 +81,19 @@ model_type = instantiate(
 
 Here `my_app.get_model_class` authorizes the factory call and
 `my_app.models.ResNet` authorizes the returned class.
+
+## Threat model and implementation state
+
+Declarative instantiation and logging configuration may be untrusted. Installed
+Python code and execution whitelists supplied by trusted Python code are trusted;
+the execution policy is not a general Python sandbox.
+
+Configuration cannot reference objects under `hydra._internal`, expose Hydra
+module state through discovery, or modify existing Python functions and classes.
+Hydra also validates and captures its immutable policy before resolving targets,
+so rebinding a policy global cannot change an operation already in progress and
+causes the next operation to fail closed. `UNSAFE_DISABLE_EXECUTION_CHECKS`
+explicitly disables these protections for trusted configuration.
 
 ## Partial instantiation (deferred calls)
 

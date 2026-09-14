@@ -614,6 +614,15 @@ the module `my_module.my_nested_module`, then find `my_object` inside that neste
 Hydra exposes an API allowing direct use of this dotpath lookup machinery.
 The following three functions, which can be imported from the <GithubLink to="hydra/utils.py">hydra.utils</GithubLink> module,
 accept a string-typed dotpath as an argument and return the located class/callable/object:
+
+:::warning
+
+These are low-level lookup APIs and do not enforce Hydra's execution policy.
+Their paths must be trusted and must never come from untrusted configuration.
+Use `instantiate()` for config-driven object lookup.
+
+:::
+
 ```python
 def get_class(path: str) -> type:
     """

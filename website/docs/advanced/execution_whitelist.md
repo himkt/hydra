@@ -86,7 +86,7 @@ This does not protect calls that application code makes directly to
 
 - [Scopes and application integration](./execution_whitelist/scopes.md) covers
   direct calls, nested contexts, shared policies, frameworks, and threads.
-- [Target authorization rules](./execution_whitelist/target_rules.md) covers
+- [Execution authorization rules](./execution_whitelist/authorization_rules.md) covers
   configured identities, indirectly selected callables, and partial
   instantiation.
 - [Restricted targets](./execution_whitelist/restricted_targets.md) explains

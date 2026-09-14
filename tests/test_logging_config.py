@@ -1,25 +1,37 @@
 # SPDX-FileCopyrightText: Contributors to Hydra
 # SPDX-License-Identifier: MIT
 
+import inspect
 import logging
 import logging.config
 import logging.handlers
+import os
 import queue
 import sys
 import types
 import warnings
+from functools import partial
 from pathlib import Path
-from typing import Any, Generator
+from typing import Any, Generator, cast
 
 from omegaconf import DictConfig, OmegaConf
-from pytest import MonkeyPatch, fixture, importorskip, mark, raises, warns
+from pytest import (
+    CaptureFixture,
+    MonkeyPatch,
+    fixture,
+    importorskip,
+    mark,
+    raises,
+    warns,
+)
 
 from hydra import main
-from hydra._internal.logging_config import HydraDictConfigurator
-from hydra._internal.target_policy import (
+from hydra._internal import execution_policy
+from hydra._internal.execution_policy import (
     UNSAFE_DISABLE_EXECUTION_CHECKS,
     _get_active_execution_whitelist,
 )
+from hydra._internal.logging_config import HydraDictConfigurator
 from hydra.core.utils import configure_log
 from hydra.errors import InstantiationException
 from hydra.utils import execution_whitelist
@@ -36,6 +48,14 @@ class CustomFormatter(logging.Formatter):
 
 class CustomFilter(logging.Filter):
     pass
+
+
+def logging_function_target(*, marker: str = "original") -> None:
+    pass
+
+
+def function_factory() -> Any:
+    return logging_function_target
 
 
 class CallableHandler(logging.Handler):
@@ -170,6 +190,27 @@ def test_logging_blacklist_rejects_handler_class_rce() -> None:
     assert "Target 'subprocess.Popen' is blacklisted" in str(cause)
 
 
+@mark.parametrize(
+    "target",
+    [
+        "builtins.locals",
+        "builtins.vars",
+        "sys.exc_info",
+        "types.GetSetDescriptorType.__get__",
+    ],
+)
+def test_logging_whitelist_cannot_authorize_runtime_capability(target: str) -> None:
+    config = _logging_config({"()": target})
+
+    with execution_whitelist(target):
+        with raises(ValueError, match="Unable to configure handler") as exc_info:
+            configure_log(config)
+
+    cause = _root_cause(exc_info.value)
+    assert isinstance(cause, InstantiationException)
+    assert "cannot be authorized" in str(cause)
+
+
 def test_logging_whitelist_rejects_unlisted_factory() -> None:
     config = _logging_config({"()": "tests.test_logging_config.CustomHandler"})
 
@@ -198,6 +239,115 @@ def test_logging_whitelist_allows_custom_factory() -> None:
         configure_log(config)
 
     assert isinstance(logging.getLogger().handlers[0], CustomHandler)
+
+
+def test_logging_rejects_internal_policy_reference() -> None:
+    target = "hydra._internal.execution_policy._capture_execution_policy"
+    config = _logging_config({"()": target})
+
+    with execution_whitelist(target):
+        with raises(ValueError, match="implementation state"):
+            configure_log(config)
+
+
+def test_logging_policy_integrity_mismatch_fails_closed(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(execution_policy, "UNCONTROLLED_EXECUTION_TARGETS", frozenset())
+
+    with raises(InstantiationException, match="integrity"):
+        configure_log(_logging_config({"class": "logging.StreamHandler"}))
+
+
+def test_logging_properties_cannot_mutate_function_code() -> None:
+    original = logging_function_target.__kwdefaults__
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "formatters": {
+                "test": {
+                    "()": "tests.test_logging_config.function_factory",
+                    ".": {"__kwdefaults__": {"marker": "mutated"}},
+                }
+            },
+            "handlers": {
+                "test": {"class": "logging.StreamHandler", "formatter": "test"}
+            },
+            "root": {"handlers": ["test"]},
+        }
+    )
+
+    with execution_whitelist(
+        [
+            "tests.test_logging_config.function_factory",
+            "tests.test_logging_config.logging_function_target",
+        ]
+    ):
+        with raises(ValueError, match="cannot modify Python functions"):
+            configure_log(config)
+
+    assert logging_function_target.__kwdefaults__ is original
+
+
+@mark.parametrize(
+    ("alias", "module", "attribute", "message"),
+    [
+        (
+            "tests.test_logging_config.inspect",
+            inspect,
+            "getmembers",
+            "cannot be authorized",
+        ),
+        ("tests.test_logging_config.types", types, "SimpleNamespace", "cannot modify"),
+    ],
+)
+def test_logging_discovery_cannot_expose_or_mutate_module(
+    alias: str, module: types.ModuleType, attribute: str, message: str
+) -> None:
+    original = getattr(module, attribute)
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "formatters": {
+                "test": {
+                    "()": "hydra.utils.get_object",
+                    "path": alias,
+                    ".": {attribute: "mutated"},
+                }
+            },
+            "handlers": {
+                "test": {"class": "logging.StreamHandler", "formatter": "test"}
+            },
+            "root": {"handlers": ["test"]},
+        }
+    )
+
+    with execution_whitelist(["hydra.utils.get_object", alias]):
+        with raises(ValueError, match="Unable to configure formatter") as exc_info:
+            configure_log(config)
+
+    cause = _root_cause(exc_info.value)
+    assert isinstance(cause, InstantiationException)
+    assert message in str(cause)
+    assert getattr(module, attribute) is original
+
+
+def test_logging_handler_factory_cannot_return_function() -> None:
+    config = _logging_config({"()": "tests.test_logging_config.function_factory"})
+
+    with execution_whitelist(
+        [
+            "tests.test_logging_config.function_factory",
+            "tests.test_logging_config.logging_function_target",
+        ]
+    ):
+        with raises(ValueError, match="Unable to configure handler") as exc_info:
+            configure_log(config)
+
+    cause = _root_cause(exc_info.value)
+    assert isinstance(cause, TypeError)
+    assert "must return a logging.Handler instance" in str(cause)
+    assert not hasattr(logging_function_target, "name")
 
 
 def test_logging_handler_class_result_uses_execution_whitelist() -> None:
@@ -331,6 +481,246 @@ def test_logging_formatter_class_uses_execution_whitelist() -> None:
     assert "CustomFormatter" in str(cause)
 
 
+def test_logging_brace_format_style_is_permanently_blocked() -> None:
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "formatters": {
+                "test": {"format": "{message}", "style": "{"},
+            },
+            "handlers": {
+                "test": {"class": "logging.StreamHandler", "formatter": "test"}
+            },
+            "root": {"handlers": ["test"]},
+            "disable_existing_loggers": False,
+        }
+    )
+
+    with execution_whitelist([]):
+        with raises(ValueError, match="Unable to configure formatter") as exc_info:
+            configure_log(config)
+
+    cause = _root_cause(exc_info.value)
+    assert isinstance(cause, InstantiationException)
+    assert "cannot be selected by declarative configuration" in str(cause)
+
+
+@mark.parametrize(
+    "formatter",
+    [
+        {"()": "logging.Formatter", "format": "{message}", "style": "{"},
+        {"class": "logging.Formatter", "format": "{message}", "style": "{"},
+    ],
+)
+def test_logging_brace_format_style_is_blocked_for_custom_routes(
+    formatter: dict[str, Any],
+) -> None:
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "formatters": {"test": formatter},
+            "handlers": {
+                "test": {"class": "logging.StreamHandler", "formatter": "test"}
+            },
+            "root": {"handlers": ["test"]},
+            "disable_existing_loggers": False,
+        }
+    )
+
+    with execution_whitelist([]):
+        with raises(ValueError, match="Unable to configure formatter") as exc_info:
+            configure_log(config)
+
+    cause = _root_cause(exc_info.value)
+    assert isinstance(cause, InstantiationException)
+    assert "cannot be selected by declarative configuration" in str(cause)
+
+
+def test_logging_str_format_style_factory_is_permanently_blocked() -> None:
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "formatters": {
+                "test": {
+                    "()": "logging.StrFormatStyle",
+                    "fmt": "{message.__class__}",
+                }
+            },
+            "handlers": {
+                "test": {"class": "logging.StreamHandler", "formatter": "test"}
+            },
+            "root": {"handlers": ["test"]},
+            "disable_existing_loggers": False,
+        }
+    )
+
+    with execution_whitelist("logging.*"):
+        with raises(ValueError, match="Unable to configure formatter") as exc_info:
+            configure_log(config)
+
+    cause = _root_cause(exc_info.value)
+    assert isinstance(cause, InstantiationException)
+    assert "logging.StrFormatStyle" in str(cause)
+    assert "cannot be authorized" in str(cause)
+
+
+def test_logging_drops_non_formatter_factory_result(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HYDRA_SECURITY_PROBE", "sentinel-secret")
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "formatters": {
+                "test": {
+                    "()": "builtins.str",
+                    "object": ("{0.msg.__globals__[os].environ[HYDRA_SECURITY_PROBE]}"),
+                }
+            },
+            "handlers": {
+                "test": {"class": "logging.StreamHandler", "formatter": "test"}
+            },
+            "root": {"level": "INFO", "handlers": ["test"]},
+            "disable_existing_loggers": False,
+        }
+    )
+
+    with (
+        execution_whitelist("builtins.str"),
+        warns(
+            UserWarning,
+            match="returned str instead of logging.Formatter; ignoring",
+        ),
+    ):
+        configure_log(config)
+
+    handler = logging.getLogger().handlers[0]
+    assert handler.formatter is None
+    logging.getLogger().info(test_logging_drops_non_formatter_factory_result)
+    assert "sentinel-secret" not in capsys.readouterr().err
+
+
+def test_logging_drops_non_formatter_class_result(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("HYDRA_SECURITY_PROBE", "sentinel-secret")
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "formatters": {
+                "test": {
+                    "class": "builtins.str",
+                    "format": b"{0.msg.__globals__[os].environ[HYDRA_SECURITY_PROBE]}",
+                    "datefmt": "utf-8",
+                    "style": "strict",
+                },
+            },
+            "handlers": {
+                "test": {"class": "logging.StreamHandler", "formatter": "test"}
+            },
+            "root": {"level": "INFO", "handlers": ["test"]},
+            "disable_existing_loggers": False,
+        }
+    )
+
+    with (
+        execution_whitelist("builtins.str"),
+        warns(
+            UserWarning,
+            match="returned str instead of logging.Formatter; ignoring",
+        ),
+    ):
+        configure_log(config)
+
+    handler = logging.getLogger().handlers[0]
+    assert handler.formatter is None
+    logging.getLogger().info(test_logging_drops_non_formatter_class_result)
+    assert "sentinel-secret" not in capsys.readouterr().err
+
+
+@mark.parametrize(
+    "formatter",
+    [
+        {"()": "builtins.str", "object": "safe"},
+        {
+            "class": "builtins.str",
+            "format": b"safe",
+            "datefmt": "utf-8",
+            "style": "strict",
+        },
+    ],
+)
+def test_unsafe_disable_allows_non_formatter_result(
+    formatter: dict[str, Any],
+) -> None:
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "formatters": {"test": formatter},
+            "handlers": {
+                "test": {"class": "logging.StreamHandler", "formatter": "test"}
+            },
+            "root": {"handlers": ["test"]},
+            "disable_existing_loggers": False,
+        }
+    )
+
+    with execution_whitelist(UNSAFE_DISABLE_EXECUTION_CHECKS):
+        configure_log(config)
+
+    assert logging.getLogger().handlers[0].formatter == "safe"
+
+
+@mark.parametrize(
+    ("style", "fmt"),
+    [("%", "%(message)s"), ("$", "$message")],
+)
+def test_logging_non_traversing_format_styles_remain_available(
+    style: str, fmt: str
+) -> None:
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "formatters": {"test": {"format": fmt, "style": style}},
+            "handlers": {
+                "test": {"class": "logging.StreamHandler", "formatter": "test"}
+            },
+            "root": {"handlers": ["test"]},
+            "disable_existing_loggers": False,
+        }
+    )
+
+    with execution_whitelist([]):
+        configure_log(config)
+
+    formatter = logging.getLogger().handlers[0].formatter
+    assert formatter is not None
+    assert formatter._style._fmt == fmt
+
+
+def test_unsafe_disable_execution_checks_allows_brace_format_style() -> None:
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "formatters": {
+                "test": {"format": "{message}", "style": "{"},
+            },
+            "handlers": {
+                "test": {"class": "logging.StreamHandler", "formatter": "test"}
+            },
+            "root": {"handlers": ["test"]},
+            "disable_existing_loggers": False,
+        }
+    )
+
+    with execution_whitelist(UNSAFE_DISABLE_EXECUTION_CHECKS):
+        configure_log(config)
+
+    formatter = logging.getLogger().handlers[0].formatter
+    assert formatter is not None
+    assert formatter._style._fmt == "{message}"
+
+
 def test_logging_formatter_class_is_resolved_once() -> None:
     payload_executed = False
 
@@ -346,7 +736,7 @@ def test_logging_formatter_class_is_resolved_once() -> None:
             if name != "Formatter":
                 raise AttributeError(name)
             self.lookups += 1
-            return logging.Formatter if self.lookups == 1 else payload
+            return CustomFormatter if self.lookups == 1 else payload
 
     module_name = "hydra_logging_alternating_test"
     module = AlternatingModule(module_name)
@@ -527,6 +917,153 @@ def test_logging_resolved_alias_cannot_hide_non_whitelistable_target() -> None:
     assert isinstance(cause, InstantiationException)
     assert "Target 'os.system'" in str(cause)
     assert "cannot be authorized" in str(cause)
+
+
+def test_logging_cannot_mutate_os_environ(monkeypatch: MonkeyPatch) -> None:
+    data: dict[bytes, bytes] = {}
+    environ = cast(Any, os._Environ)(  # type: ignore[attr-defined]
+        data, os.fsencode, os.fsdecode, os.fsencode, os.fsdecode
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "environment_probe", environ, raising=False
+    )
+    monkeypatch.setattr(os, "putenv", lambda _key, _value: None)
+    target = f"{__name__}.environment_probe.update"
+    config = _logging_config({"()": target, "HYDRA_SECURITY_TEST": "tampered"})
+
+    with execution_whitelist(target):
+        with raises(ValueError, match="Unable to configure handler") as exc_info:
+            configure_log(config)
+
+    cause = _root_cause(exc_info.value)
+    assert isinstance(cause, InstantiationException)
+    assert "cannot modify the process environment" in str(cause)
+    assert data == {}
+
+
+def test_logging_cannot_mutate_os_environ_through_call_wrapper(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    data: dict[bytes, bytes] = {}
+    environ = cast(Any, os._Environ)(  # type: ignore[attr-defined]
+        data, os.fsencode, os.fsdecode, os.fsencode, os.fsdecode
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "environment_probe", environ, raising=False
+    )
+    monkeypatch.setattr(os, "putenv", lambda _key, _value: None)
+    target = f"{__name__}.environment_probe.__setitem__.__call__"
+    config = _logging_config({"()": target, "key": "NEW", "value": "tampered"})
+
+    with execution_whitelist([target, "os._Environ.__setitem__"]):
+        with raises(ValueError, match="Unable to configure handler") as exc_info:
+            configure_log(config)
+
+    cause = _root_cause(exc_info.value)
+    assert isinstance(cause, InstantiationException)
+    assert "cannot modify the process environment" in str(cause)
+    assert data == {}
+
+
+def test_logging_cannot_mutate_os_environ_through_partial(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    data: dict[bytes, bytes] = {}
+    environ = cast(Any, os._Environ)(  # type: ignore[attr-defined]
+        data, os.fsencode, os.fsdecode, os.fsencode, os.fsdecode
+    )
+    monkeypatch.setattr(os, "putenv", lambda _key, _value: None)
+    factory = partial(environ.update)
+    target = execution_policy._get_resolved_target_name_for_check(factory)
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "handlers": {"test": {"()": factory, "NEW": "tampered"}},
+            "root": {"handlers": ["test"]},
+            "disable_existing_loggers": False,
+        },
+        flags={"allow_objects": True},
+    )
+
+    with execution_whitelist(target):
+        with raises(ValueError, match="Unable to configure handler") as exc_info:
+            configure_log(config)
+
+    cause = _root_cause(exc_info.value)
+    assert isinstance(cause, InstantiationException)
+    assert "cannot modify the process environment" in str(cause)
+    assert data == {}
+
+
+def test_logging_configured_property_cannot_mutate_os_environ(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    data: dict[bytes, bytes] = {}
+    environ = cast(Any, os._Environ)(  # type: ignore[attr-defined]
+        data, os.fsencode, os.fsdecode, os.fsencode, os.fsdecode
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "environment_probe", environ, raising=False
+    )
+    probe_path = f"{__name__}.environment_probe"
+    config = OmegaConf.create(
+        {
+            "version": 1,
+            "filters": {
+                "test": {
+                    "()": "hydra.utils.get_object",
+                    "path": probe_path,
+                    ".": {"encodekey": "tampered"},
+                }
+            },
+            "handlers": {
+                "test": {"class": "logging.StreamHandler", "filters": ["test"]}
+            },
+            "root": {"handlers": ["test"]},
+            "disable_existing_loggers": False,
+        }
+    )
+
+    with execution_whitelist(["hydra.utils.get_object", probe_path]):
+        with raises(ValueError, match="Unable to configure filter") as exc_info:
+            configure_log(config)
+
+    cause = _root_cause(exc_info.value)
+    assert isinstance(cause, InstantiationException)
+    assert "cannot modify the process environment" in str(cause)
+    assert data == {}
+
+
+def test_logging_cannot_mutate_os_environ_with_keyword_receiver(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    data: dict[bytes, bytes] = {}
+    environ = cast(Any, os._Environ)(  # type: ignore[attr-defined]
+        data, os.fsencode, os.fsdecode, os.fsencode, os.fsdecode
+    )
+    monkeypatch.setattr(
+        sys.modules[__name__], "environment_probe", environ, raising=False
+    )
+    monkeypatch.setattr(os, "putenv", lambda _key, _value: None)
+    target = "os._Environ.__setitem__"
+    probe_path = f"{__name__}.environment_probe"
+    config = _logging_config(
+        {
+            "()": target,
+            "self": f"ext://{probe_path}",
+            "key": "NEW",
+            "value": "tampered",
+        }
+    )
+
+    with execution_whitelist([target, probe_path]):
+        with raises(ValueError, match="Unable to configure handler") as exc_info:
+            configure_log(config)
+
+    cause = _root_cause(exc_info.value)
+    assert isinstance(cause, InstantiationException)
+    assert "cannot modify the process environment" in str(cause)
+    assert data == {}
 
 
 def test_logging_unsafe_disable_execution_checks_is_explicit_escape_hatch() -> None:

@@ -5,12 +5,13 @@ import inspect
 import logging.config
 import logging.handlers
 import sys
+import warnings
 from pathlib import Path
 from textwrap import dedent
 from typing import Any, Callable, Dict, Tuple, cast
 
 from hydra._internal.deprecation_warning import deprecation_warning
-from hydra._internal.target_policy import (
+from hydra._internal.execution_policy import (
     UNSAFE_DISABLE_EXECUTION_CHECKS,
     ExecutionWhitelist,
     NormalizedExecutionWhitelist,
@@ -19,10 +20,14 @@ from hydra._internal.target_policy import (
     _authorize_target_invocation,
     _authorize_target_name,
     _combine_execution_whitelists,
+    _execution_policy_context,
     _get_os_alias_target,
     _get_resolved_target_name_for_check,
     _mediate_target_result,
+    _reject_protected_reference,
+    _reject_protected_result,
     _resolve_execution_whitelist,
+    _validated_execution_policy,
 )
 from hydra.errors import InstantiationException
 
@@ -85,8 +90,19 @@ class HydraDictConfigurator(logging.config.DictConfigurator):
     ) -> None:
         super().__init__(config)
         self._execution_whitelist = execution_whitelist
+        self._execution_policy = (
+            None
+            if execution_whitelist is UNSAFE_DISABLE_EXECUTION_CHECKS
+            else _validated_execution_policy(
+                "5e70100572e2183db32478e51b32d1edd9b9e1af4a47747d10c7b80b8fadf76e"
+            )
+        )
         self._resolved_targets: Dict[str, Any] = {}
         self._resolved_target_sources: Dict[int, str] = {}
+
+    def configure(self) -> None:
+        with _execution_policy_context(self._execution_policy):
+            super().configure()
 
     def _authorize_callable(self, target: Any, resolved_from: str) -> str:
         if not callable(target):
@@ -123,17 +139,19 @@ class HydraDictConfigurator(logging.config.DictConfigurator):
         kwargs: Dict[str, Any],
         resolved_from: str,
     ) -> Any:
-        _authorize_target_invocation(
-            target,
-            args,
-            kwargs,
-            "hydra.logging",
-            self._execution_whitelist,
+        effective_target, effective_args, effective_kwargs = (
+            _authorize_target_invocation(
+                target,
+                args,
+                kwargs,
+                "hydra.logging",
+                self._execution_whitelist,
+            )
         )
         discovery_path = _authorize_discovery_path(
-            target,
-            args,
-            kwargs,
+            effective_target,
+            effective_args,
+            effective_kwargs,
             "hydra.logging",
             self._execution_whitelist,
         )
@@ -149,8 +167,10 @@ class HydraDictConfigurator(logging.config.DictConfigurator):
     def resolve(self, s: str) -> Any:
         if s in self._resolved_targets:
             return self._resolved_targets[s]
+        _reject_protected_reference(s, "hydra.logging", self._execution_whitelist)
         _authorize_target_name(s, s, "hydra.logging", self._execution_whitelist)
         result = super().resolve(s)
+        _reject_protected_result(result, s, "hydra.logging", self._execution_whitelist)
         self._authorize_callable(result, s)
         if (
             not callable(result)
@@ -179,34 +199,76 @@ class HydraDictConfigurator(logging.config.DictConfigurator):
 
         config["()"] = authorized_factory
 
+    def _apply_configured_properties(self, result: Any, props: Any) -> None:
+        if props:
+            for name, value in props.items():
+                _authorize_target_invocation(
+                    setattr,
+                    (result, name, value),
+                    {},
+                    "hydra.logging",
+                    self._execution_whitelist,
+                )
+                setattr(result, name, value)
+
     def configure_custom(self, config: Any) -> Any:
         self._prepare_custom_factory(config)
-        return super().configure_custom(config)
+        props = config.pop(".", None)
+        result = super().configure_custom(config)
+        self._apply_configured_properties(result, props)
+        return result
+
+    def _drop_invalid_formatter_result(self, result: Any, source: Any) -> Any:
+        if (
+            self._execution_whitelist is not UNSAFE_DISABLE_EXECUTION_CHECKS
+            and not isinstance(result, logging.Formatter)
+        ):
+            warnings.warn(
+                f"Logging formatter {source!r} returned "
+                f"{type(result).__name__} instead of logging.Formatter; "
+                "ignoring the configured formatter.",
+                UserWarning,
+                stacklevel=3,
+            )
+            return None
+        return result
 
     def configure_formatter(self, config: Any) -> Any:
-        if "()" in config:
-            return super().configure_formatter(config)
-
-        formatter_class = config.get("class")
-        if isinstance(formatter_class, str):
-            target = self.resolve(formatter_class)
-            fmt = config.get("format")
-            datefmt = config.get("datefmt")
-            style = config.get("style", "%")
-            args: Tuple[Any, ...] = (fmt, datefmt, style)
-            if "validate" in config:
-                args += (config["validate"],)
-            kwargs: Dict[str, Any] = {}
-            if sys.version_info >= (3, 12):
-                defaults = config.get("defaults")
-                if defaults is not None:
-                    kwargs["defaults"] = defaults
-            return self._invoke_authorized_callable(
-                target, args, kwargs, formatter_class
+        if (
+            config.get("style", "%") == "{"
+            and self._execution_whitelist is not UNSAFE_DISABLE_EXECUTION_CHECKS
+        ):
+            raise InstantiationException(
+                "Logging format style '{' cannot be selected by declarative "
+                "configuration because its fields can traverse Python objects. "
+                "Use '%' or '$' style, or configure logging from trusted Python code."
             )
-        elif callable(formatter_class):
-            self._authorize_callable(formatter_class, "")
-        return super().configure_formatter(config)
+        source = config.get("()", config.get("class", "logging.Formatter"))
+        if "()" in config:
+            result = super().configure_formatter(config)
+        else:
+            formatter_class = config.get("class")
+            if isinstance(formatter_class, str):
+                target = self.resolve(formatter_class)
+                fmt = config.get("format")
+                datefmt = config.get("datefmt")
+                style = config.get("style", "%")
+                args: Tuple[Any, ...] = (fmt, datefmt, style)
+                if "validate" in config:
+                    args += (config["validate"],)
+                kwargs: Dict[str, Any] = {}
+                if sys.version_info >= (3, 12):
+                    defaults = config.get("defaults")
+                    if defaults is not None:
+                        kwargs["defaults"] = defaults
+                result = self._invoke_authorized_callable(
+                    target, args, kwargs, formatter_class
+                )
+            else:
+                if callable(formatter_class):
+                    self._authorize_callable(formatter_class, "")
+                result = super().configure_formatter(config)
+        return self._drop_invalid_formatter_result(result, source)
 
     def _configure_queue_handler(self, klass: Any, **kwargs: Any) -> Any:
         listener = kwargs.get("listener")
@@ -243,17 +305,19 @@ class HydraDictConfigurator(logging.config.DictConfigurator):
                 if key not in {"class", "formatter", "level", "filters", "."}
                 and key.isidentifier()
             }
-            _authorize_target_invocation(
-                handler_class,
-                (),
-                kwargs,
-                "hydra.logging",
-                self._execution_whitelist,
+            effective_target, effective_args, effective_kwargs = (
+                _authorize_target_invocation(
+                    handler_class,
+                    (),
+                    kwargs,
+                    "hydra.logging",
+                    self._execution_whitelist,
+                )
             )
             discovery_path = _authorize_discovery_path(
-                handler_class,
-                (),
-                kwargs,
+                effective_target,
+                effective_args,
+                effective_kwargs,
                 "hydra.logging",
                 self._execution_whitelist,
             )
@@ -288,6 +352,11 @@ class HydraDictConfigurator(logging.config.DictConfigurator):
             config.update(deferred_config)
             raise
 
+        if not isinstance(result, logging.Handler):
+            raise TypeError(
+                "Configured handler factory must return a logging.Handler instance"
+            )
+
         if resolved_from:
             result = _mediate_target_result(
                 result,
@@ -310,9 +379,7 @@ class HydraDictConfigurator(logging.config.DictConfigurator):
         if filters:
             self.add_filters(result, filters)
         props = deferred_config.get(".")
-        if props:
-            for name, value in props.items():
-                setattr(result, name, value)
+        self._apply_configured_properties(result, props)
         return result
 
 

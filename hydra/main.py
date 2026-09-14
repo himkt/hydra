@@ -9,8 +9,8 @@ from typing import Any, Callable, List, Optional
 from omegaconf import DictConfig, open_dict, read_write
 
 from . import version
-from ._internal.target_policy import ExecutionWhitelist
-from ._internal.target_policy import (
+from ._internal.execution_policy import ExecutionWhitelist
+from ._internal.execution_policy import (
     execution_whitelist as execution_whitelist_context,
 )
 from ._internal.utils import _run_hydra, get_args_parser

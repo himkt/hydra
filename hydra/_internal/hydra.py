@@ -17,7 +17,7 @@ from omegaconf import (
 )
 from omegaconf.errors import InterpolationToMissingValueError
 
-from hydra._internal.target_policy import _get_active_execution_whitelist
+from hydra._internal.execution_policy import _get_active_execution_whitelist
 from hydra._internal.utils import get_column_widths, run_and_report
 from hydra.core.config_loader import ConfigLoader
 from hydra.core.config_search_path import ConfigSearchPath

@@ -35,7 +35,8 @@ from omegaconf._utils import is_structured_config
 from omegaconf.errors import InterpolationResolutionError
 
 from hydra._internal.deprecation_warning import deprecation_warning
-from hydra._internal.target_policy import (
+from hydra._internal.execution_policy import (
+    UNSAFE_DISABLE_EXECUTION_CHECKS,
     ExecutionWhitelist,
     NormalizedExecutionWhitelist,
     _authorize_discovery_path,
@@ -43,11 +44,14 @@ from hydra._internal.target_policy import (
     _authorize_target_invocation,
     _authorize_target_name,
     _DeferredTarget,
-    _get_effective_target_invocation,
+    _execution_policy_context,
+    _get_active_execution_policy,
     _get_os_alias_target,
     _get_resolved_target_name_for_check,
     _mediate_target_result,
+    _reject_protected_reference,
     _resolve_execution_whitelist,
+    _validated_execution_policy,
     _with_full_key,
 )
 from hydra._internal.utils import _locate
@@ -244,13 +248,10 @@ def _call_target(
         raise InstantiationException(_with_full_key(msg, full_key)) from e
 
     resolved_target_name = _get_resolved_target_name_for_check(_target_)
-    effective_target, effective_args, effective_kwargs = (
-        _get_effective_target_invocation(_target_, args, kwargs)
-    )
-    _authorize_target_invocation(
-        effective_target,
-        effective_args,
-        effective_kwargs,
+    effective_target, effective_args, effective_kwargs = _authorize_target_invocation(
+        _target_,
+        args,
+        kwargs,
         full_key,
         execution_whitelist,
         allow_incomplete_partial=_partial_,
@@ -268,6 +269,7 @@ def _call_target(
             deferred._hydra_resolved_from = discovery_path or resolved_target_name
             deferred._hydra_full_key = full_key
             deferred._hydra_execution_whitelist = execution_whitelist
+            deferred._hydra_execution_policy = _get_active_execution_policy()
             deferred._hydra_call_context = deferred_call_context
             return deferred
         result = _target_(*args, **kwargs)
@@ -371,6 +373,8 @@ def _resolve_target(
 
         # Stage 1: authorize a string literally before import, or authorize an
         # already-resolved callable by its canonical identity.
+        if isinstance(target, str):
+            _reject_protected_reference(target_name, full_key, execution_whitelist)
         _authorize_target_name(target_name, target_name, full_key, execution_whitelist)
 
         resolved_name = target_name
@@ -453,11 +457,27 @@ def instantiate(
              if _target_ is a callable: the return value of the call
     """
 
-    # Return None if config is None
     if config is None:
         return None
 
     execution_whitelist = _resolve_execution_whitelist(_execution_whitelist_)
+    policy = (
+        None
+        if execution_whitelist is UNSAFE_DISABLE_EXECUTION_CHECKS
+        else _validated_execution_policy(
+            "5e70100572e2183db32478e51b32d1edd9b9e1af4a47747d10c7b80b8fadf76e"
+        )
+    )
+    with _execution_policy_context(policy):
+        return _instantiate_impl(config, args, kwargs, execution_whitelist)
+
+
+def _instantiate_impl(
+    config: Any,
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+    execution_whitelist: NormalizedExecutionWhitelist,
+) -> Any:
     source_config_is_omegaconf = OmegaConf.is_config(config)
 
     for index, value in enumerate(args):

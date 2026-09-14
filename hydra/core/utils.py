@@ -109,8 +109,8 @@ def run_job(
     hydra_context: HydraContext,
     configure_logging: bool = True,
 ) -> "JobReturn":
-    # Imported lazily because target_policy's resolver imports core.utils.
-    from hydra._internal.target_policy import execution_whitelist
+    # Imported lazily because execution_policy's resolver imports core.utils.
+    from hydra._internal.execution_policy import execution_whitelist
 
     with execution_whitelist(hydra_context.execution_whitelist, reset=True):
         return _run_job(

@@ -5,7 +5,7 @@ from typing import Any, cast
 from omegaconf import OmegaConf, open_dict
 
 from hydra._internal.config_loader_impl import ConfigLoaderImpl
-from hydra._internal.target_policy import _get_active_execution_whitelist
+from hydra._internal.execution_policy import _get_active_execution_whitelist
 from hydra._internal.utils import create_config_search_path
 from hydra.core import utils
 from hydra.core.hydra_config import HydraConfig

@@ -1,5 +1,6 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import datetime
+import os
 import re
 from textwrap import dedent
 from typing import Any
@@ -11,7 +12,7 @@ except ImportError:
 from pytest import mark, param, raises
 
 from hydra._internal.utils import _locate
-from hydra.utils import get_class, get_method, get_object
+from hydra.utils import execution_whitelist, get_class, get_method, get_object
 from tests.instantiate import (
     AClass,
     Adam,
@@ -185,6 +186,11 @@ def test_get_method(path: str, expected: Any) -> None:
             get_method(path)
     else:
         assert get_method(path) == expected
+
+
+def test_get_method_does_not_apply_execution_whitelist() -> None:
+    with execution_whitelist([]):
+        assert get_method("os.system") is os.system
 
 
 @mark.parametrize(

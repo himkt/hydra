@@ -110,7 +110,7 @@ module.exports = {
                 items: [
                     'advanced/execution_whitelist',
                     'advanced/execution_whitelist/scopes',
-                    'advanced/execution_whitelist/target_rules',
+                    'advanced/execution_whitelist/authorization_rules',
                     'advanced/execution_whitelist/restricted_targets',
                 ]
             },
