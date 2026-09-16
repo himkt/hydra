@@ -1,1 +1,1 @@
-Preserve job tracebacks across remote launcher serialization.
+Preserve tracebacks for transportable job exceptions across remote launchers.
