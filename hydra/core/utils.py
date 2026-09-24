@@ -1,8 +1,11 @@
 # Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved
 import builtins
 import copy
+import importlib
 import logging
+import math
 import os
+import pickle
 import re
 import sys
 from contextlib import contextmanager
@@ -441,6 +444,7 @@ _SerializedExceptionNode = Tuple[
     _SerializedTraceback,
     _SerializedExceptionChain,
     List["_SerializedExceptionNode"],
+    List[str],
 ]
 _SerializedExceptionGroup = List[_SerializedExceptionNode]
 
@@ -459,6 +463,14 @@ def _safe_exception_message(error: BaseException) -> str:
         return str(error)
     except BaseException:
         return "<exception message unavailable>"
+
+
+def _exception_notes(error: BaseException) -> List[str]:
+    try:
+        notes = getattr(error, "__notes__", ())
+    except BaseException:
+        return []
+    return [note for note in notes if type(note) is str] if type(notes) is list else []
 
 
 def _serialize_exception_chain(
@@ -486,6 +498,69 @@ def _exception_group_members(error: BaseException) -> Sequence[BaseException]:
     return cast(Sequence[BaseException], error.exceptions)
 
 
+def _needs_cloudpickle(error: BaseException) -> bool:
+    error_type = type(error)
+    return (
+        error_type.__module__ == "__main__"
+        or "<locals>" in error_type.__qualname__
+        or any(_needs_cloudpickle(member) for member in _exception_group_members(error))
+    )
+
+
+def _exception_args_match(original: BaseException, restored: BaseException) -> bool:
+    if len(original.args) != len(restored.args):
+        return False
+    for left, right in zip(original.args, restored.args):
+        if type(left) is float and type(right) is float:
+            if math.isnan(left) and math.isnan(right):
+                continue
+        if left != right:
+            return False
+    return True
+
+
+def _exception_payload_matches(
+    original: BaseException, restored: BaseException
+) -> bool:
+    original_members = _exception_group_members(original)
+    restored_members = _exception_group_members(restored)
+    if (
+        type(restored) is not type(original)
+        or (not original_members and not _exception_args_match(original, restored))
+        or _exception_notes(restored) != _exception_notes(original)
+        or _safe_exception_message(restored) != _safe_exception_message(original)
+    ):
+        return False
+    return len(original_members) == len(restored_members) and all(
+        _exception_payload_matches(left, right)
+        for left, right in zip(original_members, restored_members)
+    )
+
+
+def _has_non_string_notes(
+    error: BaseException, seen: Optional[Set[int]] = None
+) -> bool:
+    if seen is None:
+        seen = set()
+    if id(error) in seen:
+        return False
+    seen.add(id(error))
+    missing = object()
+    notes = getattr(error, "__notes__", missing)
+    if notes is not missing and (
+        type(notes) is not list or len(notes) != len(_exception_notes(error))
+    ):
+        return True
+    for related in (
+        *_exception_group_members(error),
+        error.__cause__,
+        error.__context__,
+    ):
+        if related is not None and _has_non_string_notes(related, seen):
+            return True
+    return False
+
+
 def _serialize_exception_node(
     error: BaseException, ancestors: Optional[Set[int]] = None
 ) -> _SerializedExceptionNode:
@@ -506,6 +581,7 @@ def _serialize_exception_node(
         _serialize_traceback(error.__traceback__),
         _serialize_exception_chain(error, seen),
         [_serialize_exception_node(child, seen) for child in members],
+        _exception_notes(error),
     )
 
 
@@ -555,8 +631,21 @@ def _deserialize_exception_chain(
     return relation, _deserialize_exception_node(node)
 
 
+def _restore_exception_notes(error: BaseException, notes: Sequence[str]) -> None:
+    add_note = getattr(error, "add_note", None)
+    if add_note is not None:
+        existing_notes = _exception_notes(error)
+        for note in notes:
+            if type(note) is str:
+                if note in existing_notes:
+                    existing_notes.remove(note)
+                else:
+                    add_note(note)
+
+
 def _deserialize_exception_node(serialized: _SerializedExceptionNode) -> BaseException:
-    module, qualname, message, is_exception, tb, chain, group = serialized
+    module, qualname, message, is_exception, tb, chain, group, *extra = serialized
+    notes = extra[0] if extra else []
     children = [_deserialize_exception_node(child) for child in group]
     name = qualname.rsplit(".", maxsplit=1)[-1]
     if children:
@@ -577,6 +666,7 @@ def _deserialize_exception_node(serialized: _SerializedExceptionNode) -> BaseExc
         )
         error = error_type(message)
     error.__traceback__ = _deserialize_traceback(tb)
+    _restore_exception_notes(error, notes)
     if chain:
         relation, chained = cast(
             Tuple[str, BaseException], _deserialize_exception_chain(chain)
@@ -591,8 +681,9 @@ def _deserialize_exception_node(serialized: _SerializedExceptionNode) -> BaseExc
 def _restore_exception_node(
     error: BaseException, serialized: _SerializedExceptionNode
 ) -> None:
-    _, _, _, _, remote_traceback, remote_chain, remote_group = serialized
-    error.__traceback__ = _deserialize_traceback(remote_traceback)
+    _, _, _, _, remote_traceback, remote_chain, remote_group, *extra = serialized
+    BaseException.with_traceback(error, _deserialize_traceback(remote_traceback))
+    _restore_exception_notes(error, extra[0] if extra else [])
     if remote_chain:
         relation, chained = cast(
             Tuple[str, BaseException], _deserialize_exception_chain(remote_chain)
@@ -627,6 +718,50 @@ class JobReturn:
         default=None, repr=False, compare=False
     )
 
+    def __getstate__(self) -> Dict[str, Any]:
+        state = self.__dict__.copy()
+        error = self._return_value
+        if self.status is JobStatus.FAILED and isinstance(error, BaseException):
+            try:
+                if _has_non_string_notes(error):
+                    raise TypeError("exception contains non-string notes")
+                # The exception was raised by the local task, not read from a peer.
+                dumper = pickle
+                if _needs_cloudpickle(error):
+                    try:
+                        dumper = importlib.import_module("cloudpickle")
+                    except ImportError:
+                        # cloudpickle is optional; keep the standard pickle dumper.
+                        pass
+                serialized_error = dumper.dumps(error, protocol=pickle.HIGHEST_PROTOCOL)
+                restored = pickle.loads(serialized_error)  # nosec B301
+                if not _exception_payload_matches(error, restored):
+                    raise TypeError("exception payload changed after pickle")
+                state["_return_value_pickle"] = serialized_error
+            except BaseException:
+                pass
+            error_type = type(error)
+            fallback = RuntimeError(
+                f"Remote {error_type.__module__}.{error_type.__qualname__}: "
+                f"{_safe_exception_message(error)}"
+            )
+            add_note = getattr(fallback, "add_note", None)
+            if add_note is not None:
+                for note in _exception_notes(error):
+                    add_note(note)
+            state["_return_value"] = fallback
+        return state
+
+    def __setstate__(self, state: Dict[str, Any]) -> None:
+        serialized_error = state.pop("_return_value_pickle", None)
+        self.__dict__.update(state)
+        if serialized_error is not None:
+            try:
+                self._return_value = pickle.loads(serialized_error)  # nosec B301
+            except BaseException:
+                # Preserve the serialized fallback if reconstruction fails.
+                pass
+
     @property
     def return_value(self) -> Any:
         assert self.status != JobStatus.UNKNOWN, "return_value not yet available"
@@ -655,8 +790,8 @@ class JobReturn:
                     if len(members) == len(self._remote_exception_group):
                         for member, child in zip(members, self._remote_exception_group):
                             _restore_exception_node(member, child)
-                raise self._return_value.with_traceback(
-                    _deserialize_traceback(self._remote_traceback)
+                raise BaseException.with_traceback(
+                    self._return_value, _deserialize_traceback(self._remote_traceback)
                 )
             raise self._return_value
 
