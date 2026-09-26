@@ -15,6 +15,9 @@ updates:
       default-days: 10
 
   - package-ecosystem: "github-actions"
-    directory: "/"
+    directories:
+      - "/"
+      - "/.github/actions/macos"
+      - "/.github/actions/windows"
     schedule:
       interval: "monthly"
